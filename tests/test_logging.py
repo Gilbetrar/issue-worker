@@ -6,7 +6,6 @@ import logging
 from pathlib import Path
 
 from issue_worker.logging import (
-    LOG_DIR,
     MAX_LOG_FILES,
     get_logger,
     list_log_files,
