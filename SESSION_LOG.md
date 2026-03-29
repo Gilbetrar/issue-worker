@@ -84,3 +84,21 @@ Raw session history. Agents: append here, read LEARNINGS.md instead.
 
 **Mistakes made:**
 - None
+
+---
+
+## Agent Session - Iteration 3 (Housekeeping)
+
+**Worked on:** Closing completed issues, verifying CI, updating LEARNINGS.md
+
+**What I did:**
+- Verified all 59 tests pass and ruff is clean
+- Confirmed CI green for both issue #5 commits (327234b, 0e8c652)
+- Closed issues #1, #2, and #5 on GitHub (all were completed but left open)
+- Updated LEARNINGS.md: added CI section, updated dev commands, removed "No CI workflows yet"
+
+**What I learned:**
+- Previous agents may leave issues open even after completing the work — check and close them
+
+**Mistakes made:**
+- None
