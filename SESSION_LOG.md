@@ -87,18 +87,24 @@ Raw session history. Agents: append here, read LEARNINGS.md instead.
 
 ---
 
-## Agent Session - Iteration 3 (Housekeeping)
+## Agent Session - Iteration 3
 
-**Worked on:** Closing completed issues, verifying CI, updating LEARNINGS.md
+**Worked on:** Issue #7 - Remove old bash issue-worker from agent-system repo (+ housekeeping)
 
 **What I did:**
 - Verified all 59 tests pass and ruff is clean
 - Confirmed CI green for both issue #5 commits (327234b, 0e8c652)
-- Closed issues #1, #2, and #5 on GitHub (all were completed but left open)
-- Updated LEARNINGS.md: added CI section, updated dev commands, removed "No CI workflows yet"
+- Closed issues #1, #2, #5, and #7 on GitHub
+- Updated LEARNINGS.md: added CI section, updated dev commands
+- Deleted ~/AI/Agents/scripts/issue-worker/ (old bash version)
+- Added issue-worker to AGENTS.md projects table in agent-system repo
+- Verified run_claude alias and all acceptance criteria for issue #7
+- Committed and pushed to agent-system repo (89f31ac)
 
 **What I learned:**
 - Previous agents may leave issues open even after completing the work — check and close them
+- The agent-system repo (~/AI/Agents) has many untracked/modified files — only stage and commit the specific files relevant to your change
+- AGENTS.md is symlinked from ~/CLAUDE.md — changes there affect all projects
 
 **Mistakes made:**
 - None
