@@ -13,6 +13,9 @@ from pathlib import Path
 from . import signals, terminal, notifications, prompts
 from .logging import setup_logging, prune_logs, get_logger
 
+CONSOLIDATION_TIMEOUT = 300  # 5 minutes
+CONSOLIDATION_LINE_THRESHOLD = 200
+
 
 @dataclass
 class Config:
@@ -101,6 +104,10 @@ def run(
         log.info("─" * 59)
         log.info("  Iteration %d of %d", iteration, config.max_iterations)
         log.info("─" * 59)
+
+        # Consolidation: distill SESSION_LOG.md at iteration 1 and every 10th
+        if _should_consolidate(iteration):
+            _run_consolidation(project_path, config, launcher)
 
         # Build prompt and write to temp file
         prompt_file = Path(tempfile.mktemp(prefix="iw-prompt-", suffix=".md"))
@@ -353,6 +360,92 @@ def run(
         final_status="max_iterations",
         message=f"Reached max iterations ({config.max_iterations}).",
     )
+
+
+def _should_consolidate(iteration: int) -> bool:
+    """Check if consolidation should run (iteration 1 and every 10th)."""
+    return iteration == 1 or iteration % 10 == 0
+
+
+def _run_consolidation(
+    project_path: Path,
+    config: Config,
+    launcher,
+) -> bool:
+    """Run learnings consolidation if SESSION_LOG.md is large enough.
+
+    Launches a separate agent to distill SESSION_LOG.md into LEARNINGS.md.
+    Non-fatal: logs warnings on failure but never raises.
+
+    Returns True if consolidation completed, False if skipped or failed.
+    """
+    log = get_logger()
+    session_log = project_path / "SESSION_LOG.md"
+
+    if not session_log.exists():
+        log.info("No SESSION_LOG.md — skipping consolidation.")
+        return False
+
+    line_count = len(session_log.read_text().splitlines())
+    if line_count <= CONSOLIDATION_LINE_THRESHOLD:
+        log.info(
+            "SESSION_LOG.md is %d lines (threshold: %d) — skipping.",
+            line_count,
+            CONSOLIDATION_LINE_THRESHOLD,
+        )
+        return False
+
+    log.info("SESSION_LOG.md is %d lines — running consolidation...", line_count)
+
+    consolidation_signal = project_path / "CONSOLIDATION_SIGNAL.txt"
+    consolidation_signal.unlink(missing_ok=True)
+
+    prompt_file = Path(tempfile.mktemp(prefix="iw-consolidate-", suffix=".md"))
+    try:
+        prompt_text = prompts.render_consolidation_prompt(str(project_path))
+        prompt_file.write_text(prompt_text)
+    except FileNotFoundError:
+        log.warning("Consolidation template not found — skipping.")
+        prompt_file.unlink(missing_ok=True)
+        return False
+
+    if config.test_mode:
+        tab_cmd = (
+            f"cd '{project_path}' && "
+            f"echo 'TEST: consolidation running...' && sleep 2 && "
+            f"printf 'DONE\\n' > '{consolidation_signal}.tmp' && "
+            f"mv '{consolidation_signal}.tmp' '{consolidation_signal}'"
+        )
+    else:
+        tab_cmd = (
+            f"cd '{project_path}' && "
+            f"claude --settings '{config.settings_file}' --mcp-config '{config.mcp_config}' "
+            f"--dangerously-skip-permissions < '{prompt_file}' ; "
+            f"rm -f '{prompt_file}'"
+        )
+
+    if not launcher(tab_cmd, "Issue Worker - Consolidation"):
+        log.warning("Failed to open consolidation tab — skipping.")
+        prompt_file.unlink(missing_ok=True)
+        return False
+
+    log.info("Waiting for consolidation (timeout %ds)...", CONSOLIDATION_TIMEOUT)
+    elapsed = 0.0
+    while elapsed < CONSOLIDATION_TIMEOUT:
+        if consolidation_signal.exists():
+            content = consolidation_signal.read_text().strip()
+            if content:
+                log.info("Consolidation complete.")
+                consolidation_signal.unlink(missing_ok=True)
+                prompt_file.unlink(missing_ok=True)
+                return True
+        time.sleep(5)
+        elapsed += 5
+
+    log.warning("Consolidation timed out after %ds — continuing.", CONSOLIDATION_TIMEOUT)
+    consolidation_signal.unlink(missing_ok=True)
+    prompt_file.unlink(missing_ok=True)
+    return False
 
 
 def _sync_main(project_path: Path) -> None:
