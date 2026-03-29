@@ -108,3 +108,20 @@ Raw session history. Agents: append here, read LEARNINGS.md instead.
 
 **Mistakes made:**
 - None
+
+---
+
+## Agent Session - Iteration 5
+
+**Worked on:** Survey — no open issues remaining
+
+**What I did:**
+- Read LEARNINGS.md for context
+- Checked all open issues: none found
+- Verified closed issues #3, #4, #6 were intentionally cut/deferred (comments confirm)
+- All 7 issues are legitimately closed
+- Signaled COMPLETE
+
+**What I learned:**
+- Issues #3 (profiles), #4 (init), #6 (tmux) were cut by the user — not missing implementations
+- All issue-worker work is done for now
