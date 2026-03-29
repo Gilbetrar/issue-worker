@@ -13,17 +13,22 @@ Distilled patterns for future agents. Keep under 100 lines.
 ## Dev Commands
 
 ```bash
-uv run ruff check src/          # Lint
-uv run pytest tests/ -v         # Tests
+uv run ruff check src/ tests/   # Lint (src + tests)
+uv run pytest tests/ -v         # Tests (57 tests across 6 files)
 uv add --dev <package>          # Add dev dependency
 ```
+
+## CI
+
+- GitHub Actions workflow at `.github/workflows/ci.yml`
+- Runs on push/PR to main: ruff check + pytest
+- Always run checks locally before committing too
 
 ## Conventions
 
 - `from __future__ import annotations` at top of every module
 - Dataclasses for config/data structures
 - Type hints throughout
-- No CI workflows yet — run checks locally before committing
 
 ## Logging
 

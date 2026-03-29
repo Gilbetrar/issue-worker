@@ -56,3 +56,31 @@ Raw session history. Agents: append here, read LEARNINGS.md instead.
 
 **Mistakes made:**
 - None
+
+---
+
+## Agent Session - Issue #5
+
+**Worked on:** Issue #5 - Add pytest test suite
+
+**What I did:**
+- Created tests/test_signals.py (12 tests): write, read, wait, clear, roundtrip, dataclass str
+- Created tests/test_prompts.py (5 tests): variable substitution, no unreplaced placeholders, missing template
+- Created tests/test_project.py (10 tests): local project discovery, repo URL parsing (SSH, HTTPS, host alias)
+- Created tests/test_notifications.py (5 tests): AppleScript string escaping
+- Created tests/conftest.py (shared fixtures placeholder)
+- Created .github/workflows/ci.yml: runs ruff check + pytest on push/PR to main
+- Added [tool.pytest.ini_options] to pyproject.toml
+- All 57 tests pass, ruff clean, CI green on first push
+
+**What I learned:**
+- A pre-commit hook auto-stages and commits new files — watch for double commits
+- CI workflow uses astral-sh/setup-uv@v4 for uv installation in GitHub Actions
+- get_repo_url tests work well with real git repos in tmp_path (no mocking needed)
+
+**Codebase facts discovered:**
+- pytest and ruff were already dev dependencies from issue #1 work
+- 57 total tests across 6 test files now
+
+**Mistakes made:**
+- None
