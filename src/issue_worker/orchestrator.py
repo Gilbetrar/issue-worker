@@ -1,0 +1,466 @@
+"""Main orchestration loop for autonomous Claude Code sessions."""
+
+from __future__ import annotations
+
+import os
+import signal as signal_mod
+import subprocess
+import tempfile
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from . import signals, terminal, notifications, prompts
+from .logging import setup_logging, prune_logs, get_logger
+
+
+@dataclass
+class Config:
+    """Orchestrator configuration (hardcoded defaults for MVP)."""
+
+    projects_dir: Path = field(default_factory=lambda: Path.home() / "AI" / "Projects")
+    github_account: str = "Gilbetrar"
+    max_iterations: int = 10
+    poll_timeout: int = 1800  # 30 minutes
+    min_runtime: int = 30  # Seconds — exits faster than this are crashes
+    max_crashes: int = 3
+    test_mode: bool = False
+    verbose: bool = False
+
+    # Paths to Claude config files (resolved relative to package)
+    settings_file: Path | None = None
+    mcp_config: Path | None = None
+
+    def __post_init__(self) -> None:
+        if self.settings_file is None:
+            self.settings_file = _defaults_dir() / "settings.json"
+        if self.mcp_config is None:
+            self.mcp_config = _defaults_dir() / "mcp.json"
+        if self.test_mode:
+            self.max_iterations = 3
+            self.min_runtime = 3
+
+
+@dataclass
+class RunResult:
+    """Result of an orchestrator run."""
+
+    iterations_completed: int
+    final_status: str  # "complete", "max_iterations", "aborted", "error"
+    message: str
+
+
+def run(
+    project: str,
+    repo: str,
+    project_path: Path,
+    config: Config,
+    use_test_launcher: bool = False,
+) -> RunResult:
+    """Run the orchestration loop.
+
+    Args:
+        project: Project name.
+        repo: GitHub owner/repo string.
+        project_path: Absolute path to the project directory.
+        config: Orchestrator configuration.
+        use_test_launcher: If True, use subprocess instead of Terminal tabs.
+    """
+    launcher = terminal.open_terminal_tab_test if use_test_launcher else terminal.open_terminal_tab
+
+    signal_file = project_path / "SIGNAL.txt"
+    started_file = project_path / ".issue-worker-started"
+
+    # Set up logging
+    log_file = setup_logging(verbose=config.verbose)
+    log = get_logger()
+    log.debug("Log file: %s", log_file)
+    prune_logs()
+
+    # Print banner
+    if config.test_mode:
+        _banner("Issue Worker - SELF-TEST MODE")
+    else:
+        _banner("Issue Worker - Autonomous GitHub Issue Processor")
+    log.info("Project: %s", project)
+    log.info("Path: %s", project_path)
+    log.info("Repo: %s", repo)
+    log.info("Branch: main (direct)")
+    log.info("Max iterations: %s", config.max_iterations)
+    log.info("")
+
+    # Ensure on main and synced — FIX for bug #4 (dirty working tree)
+    _sync_main(project_path)
+
+    crash_count = 0
+    iteration = 1
+    crash_tested = False  # Test mode: only simulate crash once on iteration 2
+
+    while iteration <= config.max_iterations:
+        log.info("")
+        log.info("─" * 59)
+        log.info("  Iteration %d of %d", iteration, config.max_iterations)
+        log.info("─" * 59)
+
+        # Build prompt and write to temp file
+        prompt_file = Path(tempfile.mktemp(prefix="iw-prompt-", suffix=".md"))
+        try:
+            prompt_text = prompts.render_prompt(
+                project=project,
+                repo=repo,
+                project_path=str(project_path),
+                iteration=iteration,
+                max_iterations=config.max_iterations,
+            )
+            prompt_file.write_text(prompt_text)
+        except FileNotFoundError:
+            return RunResult(
+                iterations_completed=iteration - 1,
+                final_status="error",
+                message="Could not find prompt template. Check templates/prompt.md exists.",
+            )
+
+        # Clean slate
+        signals.clear_signal(signal_file)
+        (project_path / "HANDOFF.md").unlink(missing_ok=True)
+        started_file.unlink(missing_ok=True)
+
+        # Build command
+        if config.test_mode:
+            if iteration == 2 and not crash_tested:
+                # Simulate instant crash to test rapid-exit guard (once)
+                crash_tested = True
+                tab_cmd = (
+                    f"cd '{project_path}' && echo $$ > '{started_file}' && "
+                    f"echo 'TEST: simulating instant crash' && "
+                    f"printf 'WORKING\\nInstant exit — should trigger crash guard.\\n' > '{signal_file}.tmp' && "
+                    f"mv '{signal_file}.tmp' '{signal_file}'"
+                )
+            else:
+                tab_cmd = (
+                    f"cd '{project_path}' && echo $$ > '{started_file}' && "
+                    f"echo 'TEST MODE: sleeping 5s to simulate work...' && sleep 5 && "
+                    f"printf 'WORKING\\nTest iteration {iteration} completed.\\n' > '{signal_file}.tmp' && "
+                    f"mv '{signal_file}.tmp' '{signal_file}'"
+                )
+        else:
+            tab_cmd = (
+                f"cd '{project_path}' && echo $$ > '{started_file}' && "
+                f"claude --settings '{config.settings_file}' --mcp-config '{config.mcp_config}' "
+                f"--dangerously-skip-permissions < '{prompt_file}' ; "
+                f"[ ! -f '{signal_file}' ] && "
+                f"printf 'WORKING\\nAgent exited without writing signal file.\\n' > '{signal_file}.tmp' && "
+                f"mv '{signal_file}.tmp' '{signal_file}'"
+            )
+
+        # Launch
+        log.info("Opening Terminal tab for agent...")
+        log.debug("Tab command: %s", tab_cmd)
+        launch_time = time.time()
+
+        if not launcher(tab_cmd, f"Issue Worker - Iteration {iteration}"):
+            crash_count += 1
+            log.error("Failed to open Terminal tab. (%d/%d)", crash_count, config.max_crashes)
+            if crash_count >= config.max_crashes:
+                notifications.notify("ABORTED", "Issue worker: agents failing to start", "Sosumi")
+                prompt_file.unlink(missing_ok=True)
+                return RunResult(
+                    iterations_completed=iteration - 1,
+                    final_status="aborted",
+                    message=f"Failed to open Terminal tabs {config.max_crashes} times.",
+                )
+            log.info("  Retrying in 5s...")
+            time.sleep(5)
+            continue  # Retry same iteration
+
+        # Verify agent started
+        log.info("Verifying agent started...")
+        if not _wait_for_file(started_file, timeout=15, interval=1):
+            crash_count += 1
+            log.error("Agent never started (%d/%d)", crash_count, config.max_crashes)
+            if crash_count >= config.max_crashes:
+                notifications.notify("ABORTED", "Issue worker: agents failing to start", "Sosumi")
+                prompt_file.unlink(missing_ok=True)
+                return RunResult(
+                    iterations_completed=iteration - 1,
+                    final_status="aborted",
+                    message=f"Agent failed to start {config.max_crashes} times.",
+                )
+            log.info("  Retrying in 5s...")
+            time.sleep(5)
+            continue
+
+        pid_str = started_file.read_text().strip() if started_file.exists() else ""
+        pid = int(pid_str) if pid_str.isdigit() else None
+        log.info("Agent started (PID: %s)", pid or "unknown")
+        # Keep started_file — we need the PID for liveness checks on timeout
+
+        # Wait for signal
+        log.info("Waiting for Claude to finish (timeout %ds)...", config.poll_timeout)
+        signal = signals.wait_for_signal(signal_file, config.poll_timeout)
+
+        if signal is None:
+            # Timed out — check if agent is stuck (still alive) or exited silently
+            agent_alive = pid is not None and _is_process_alive(pid)
+
+            if agent_alive:
+                log.warning("")
+                log.warning("Agent process is still alive but has not signaled.")
+                log.warning("  This usually means it is blocked on a permission prompt.")
+                notifications.notify_stuck_agent(
+                    project=project,
+                    iteration=iteration,
+                    pid=pid,
+                    elapsed_minutes=config.poll_timeout // 60,
+                )
+                signals.write_signal(signal_file, "PAUSED", "Agent stuck: process alive but no signal after timeout.")
+            elif (project_path / "HANDOFF.md").exists():
+                signals.write_signal(signal_file, "PAUSED", "Timeout: agent exited but HANDOFF.md exists.")
+            else:
+                signals.write_signal(signal_file, "WORKING", "Timeout: agent exited without writing signal file.")
+            signal = signals.read_signal(signal_file)
+
+        time.sleep(0.2)
+
+        # Rapid-exit detection — FIX for bug #2 and #3
+        elapsed = time.time() - launch_time
+        if elapsed < config.min_runtime:
+            log.warning("")
+            log.warning("Agent exited in %.0fs (minimum: %ds)", elapsed, config.min_runtime)
+            log.warning("  Signal: %s", signal.status if signal else "none")
+            if signal and signal.summary:
+                log.warning("  Details: %s", signal.summary)
+            crash_count += 1
+            log.warning("  Crash count: %d/%d", crash_count, config.max_crashes)
+            signals.clear_signal(signal_file)
+            started_file.unlink(missing_ok=True)
+
+            if crash_count >= config.max_crashes:
+                notifications.notify("ABORTED", "Issue worker crashed repeatedly", "Sosumi")
+                prompt_file.unlink(missing_ok=True)
+                return RunResult(
+                    iterations_completed=iteration - 1,
+                    final_status="aborted",
+                    message=f"{config.max_crashes} consecutive rapid exits.",
+                )
+            log.info("  Waiting 10s before retry...")
+            time.sleep(10)
+            continue  # Retry same iteration
+
+        # Agent ran long enough — reset crash counter
+        log.debug("Agent ran for %.1fs", elapsed)
+        crash_count = 0
+        signals.clear_signal(signal_file)
+        started_file.unlink(missing_ok=True)
+        prompt_file.unlink(missing_ok=True)
+
+        if signal is None:
+            log.warning("No signal received. Continuing...")
+            iteration += 1
+            time.sleep(2)
+            continue
+
+        # Display summary
+        if signal.summary:
+            log.info("")
+            for line in signal.summary.split("\n"):
+                log.info("  %s", line)
+
+        # Override WORKING -> PAUSED if HANDOFF.md exists
+        if signal.status == "WORKING" and (project_path / "HANDOFF.md").exists():
+            log.info("Signal was WORKING but HANDOFF.md exists — treating as PAUSED.")
+            signal = signals.Signal(status="PAUSED", summary=signal.summary)
+
+        # Handle signals
+        if signal.status == "COMPLETE":
+            log.info("")
+            _banner("All work completed!")
+            log.info("  Project: %s", project_path)
+            return RunResult(
+                iterations_completed=iteration,
+                final_status="complete",
+                message="All issues complete.",
+            )
+
+        if signal.status == "PAUSED":
+            log.info("")
+            log.info("╔══════════════════════════════════════════════════════════╗")
+            log.info("║  PAUSED — Human action required                        ║")
+            log.info("╚══════════════════════════════════════════════════════════╝")
+
+            # Check if this is a stuck-agent pause (agent process still alive)
+            agent_still_alive = pid is not None and _is_process_alive(pid)
+
+            if agent_still_alive:
+                log.warning("")
+                log.warning("  Agent PID %d is STILL RUNNING (likely stuck on permission prompt).", pid)
+                log.warning("  Check Terminal.app for a tab waiting for input.")
+                log.info("")
+
+                action = notifications.prompt_stuck_action(pid, project)
+
+                if action == "kill":
+                    log.info("  Killing stuck agent (PID %d)...", pid)
+                    _kill_agent(pid)
+                    started_file.unlink(missing_ok=True)
+                    time.sleep(2)
+                    log.info("  Agent killed. Resuming orchestration...")
+                    iteration += 1
+                    continue
+                else:
+                    log.info("  Leaving agent running. Waiting for manual intervention...")
+                    log.info("  To kill manually: kill %d", pid)
+
+            notifications.notify("PAUSED", "Issue worker needs human action")
+
+            if (project_path / "HANDOFF.md").exists():
+                log.info("")
+                log.info("  HANDOFF.md found. Waiting for interactive session...")
+                log.info("  Run: cd %s && claude    then:  /pick-up-handoff", project_path)
+                log.info("")
+                while (project_path / "HANDOFF.md").exists():
+                    time.sleep(5)
+                log.info("  HANDOFF.md deleted. Resuming...")
+            else:
+                log.info("")
+                try:
+                    input("  No HANDOFF.md found. Press Enter to resume...")
+                except (EOFError, KeyboardInterrupt):
+                    return RunResult(
+                        iterations_completed=iteration,
+                        final_status="aborted",
+                        message="User interrupted during PAUSED state.",
+                    )
+
+            time.sleep(2)
+            iteration += 1
+            continue
+
+        if signal.status == "WORKING":
+            log.info("")
+            log.info("Work unit completed. Continuing to next iteration...")
+            time.sleep(2)
+            iteration += 1
+            continue
+
+        # Unknown signal
+        log.warning("Unknown signal '%s'. Continuing...", signal.status)
+        time.sleep(2)
+        iteration += 1
+
+    return RunResult(
+        iterations_completed=config.max_iterations,
+        final_status="max_iterations",
+        message=f"Reached max iterations ({config.max_iterations}).",
+    )
+
+
+def _sync_main(project_path: Path) -> None:
+    """Ensure we're on main and synced. Handles dirty working tree (bug #4)."""
+    log = get_logger()
+
+    # Check current branch
+    result = subprocess.run(
+        ["git", "branch", "--show-current"],
+        cwd=project_path,
+        capture_output=True,
+        text=True,
+    )
+    current_branch = result.stdout.strip()
+
+    if current_branch != "main":
+        log.info("Switching to main branch...")
+        subprocess.run(["git", "checkout", "main"], cwd=project_path)
+
+    # Check for dirty state before pulling
+    status_result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=project_path,
+        capture_output=True,
+        text=True,
+    )
+    is_dirty = bool(status_result.stdout.strip())
+
+    if is_dirty:
+        log.info("Working tree has changes. Stashing before sync...")
+        subprocess.run(["git", "stash", "--include-untracked"], cwd=project_path)
+
+    log.info("Syncing with remote...")
+    try:
+        subprocess.run(
+            ["git", "fetch", "origin"],
+            cwd=project_path,
+            timeout=30,
+        )
+        subprocess.run(
+            ["git", "pull", "--rebase"],
+            cwd=project_path,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        log.warning("git sync timed out")
+
+    if is_dirty:
+        log.info("Restoring stashed changes...")
+        result = subprocess.run(
+            ["git", "stash", "pop"],
+            cwd=project_path,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            log.warning("Stash pop failed (possible conflict). Changes remain in stash.")
+            log.warning("  Run 'git stash show' in %s to review.", project_path)
+
+    log.info("Working directly on main branch.")
+
+
+def _wait_for_file(path: Path, timeout: int, interval: float = 1.0) -> bool:
+    """Wait for a file to appear."""
+    elapsed = 0.0
+    while elapsed < timeout:
+        if path.exists():
+            return True
+        time.sleep(interval)
+        elapsed += interval
+    return False
+
+
+def _banner(text: str) -> None:
+    """Print a boxed banner."""
+    log = get_logger()
+    line = "═" * 59
+    log.info(line)
+    log.info("  %s", text)
+    log.info(line)
+
+
+def _is_process_alive(pid: int) -> bool:
+    """Check if a process is still running using kill(pid, 0)."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # Process exists but we don't own it
+
+
+def _kill_agent(pid: int) -> None:
+    """Terminate a stuck agent process. Tries SIGTERM, then SIGKILL."""
+    try:
+        os.kill(pid, signal_mod.SIGTERM)
+        for _ in range(10):
+            time.sleep(0.5)
+            if not _is_process_alive(pid):
+                return
+        os.kill(pid, signal_mod.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        get_logger().warning("  Cannot kill PID %d (permission denied)", pid)
+
+
+def _defaults_dir() -> Path:
+    """Get the path to the bundled defaults directory."""
+    return Path(__file__).parent.parent.parent / "defaults"
