@@ -37,17 +37,19 @@ def _logs_command(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    # Handle 'logs' subcommand before main parser to avoid argparse
+    # greedily matching positional args (like '25') as subcommands.
+    if len(sys.argv) > 1 and sys.argv[1] == "logs":
+        logs_parser = argparse.ArgumentParser(prog="issue-worker logs")
+        logs_parser.add_argument("-n", "--tail", type=int, default=20, help="Number of lines to show from latest log")
+        args = logs_parser.parse_args(sys.argv[2:])
+        _logs_command(args)
+        return
+
     parser = argparse.ArgumentParser(
         prog="issue-worker",
         description="Autonomous Claude Code issue processor",
     )
-    subparsers = parser.add_subparsers(dest="command")
-
-    # logs subcommand
-    logs_parser = subparsers.add_parser("logs", help="Show recent log files and tail the latest")
-    logs_parser.add_argument("-n", "--tail", type=int, default=20, help="Number of lines to show from latest log")
-
-    # Main arguments (when no subcommand)
     parser.add_argument("project", nargs="?", help="Project name (fuzzy matched) or omit for picker")
     parser.add_argument("max_iterations", nargs="?", type=int, help="Max iterations (default: 10)")
     parser.add_argument("--test", action="store_true", help="Self-test mode (3 iterations with stubs)")
@@ -57,11 +59,6 @@ def main() -> None:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
     args = parser.parse_args()
-
-    # Handle logs subcommand
-    if args.command == "logs":
-        _logs_command(args)
-        return
 
     # Resolve max_iterations: flag > positional > default
     max_iterations = args.max_iterations_flag or args.max_iterations or 10
