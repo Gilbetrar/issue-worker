@@ -25,7 +25,6 @@ class Config:
     github_account: str = "Gilbetrar"
     max_iterations: int = 10
     poll_timeout: int = 1800  # 30 minutes
-    min_runtime: int = 30  # Seconds — exits faster than this are crashes
     max_crashes: int = 3
     test_mode: bool = False
     verbose: bool = False
@@ -41,7 +40,6 @@ class Config:
             self.mcp_config = _defaults_dir() / "mcp.json"
         if self.test_mode:
             self.max_iterations = 3
-            self.min_runtime = 3
 
 
 @dataclass
@@ -154,12 +152,12 @@ def run(
         # Build command
         if config.test_mode:
             if iteration == 2 and not crash_tested:
-                # Simulate instant crash to test rapid-exit guard (once)
+                # Simulate agent crash: writes CRASHED signal (once)
                 crash_tested = True
                 tab_cmd = (
                     f"cd '{project_path}' && echo $$ > '{started_file}' && "
-                    f"echo 'TEST: simulating instant crash' && "
-                    f"printf 'WORKING\\nInstant exit — should trigger crash guard.\\n' > '{signal_file}.tmp' && "
+                    f"echo 'TEST: simulating agent crash' && "
+                    f"printf 'CRASHED\\nTest crash — agent exited abnormally.\\n' > '{signal_file}.tmp' && "
                     f"mv '{signal_file}.tmp' '{signal_file}'"
                 )
             else:
@@ -175,15 +173,13 @@ def run(
                 f"claude --settings '{config.settings_file}' --mcp-config '{config.mcp_config}' "
                 f"--dangerously-skip-permissions < '{prompt_file}' ; "
                 f"[ ! -f '{signal_file}' ] && "
-                f"printf 'WORKING\\nAgent exited without writing signal file.\\n' > '{signal_file}.tmp' && "
+                f"printf 'CRASHED\\nAgent exited without writing signal file.\\n' > '{signal_file}.tmp' && "
                 f"mv '{signal_file}.tmp' '{signal_file}'"
             )
 
         # Launch
         log.info("Opening Terminal tab for agent...")
         log.debug("Tab command: %s", tab_cmd)
-        launch_time = time.time()
-
         if not launcher(tab_cmd, f"Issue Worker - Iteration {iteration}"):
             crash_count += 1
             log.error("Failed to open Terminal tab. (%d/%d)", crash_count, config.max_crashes)
@@ -241,51 +237,35 @@ def run(
                     elapsed_minutes=config.poll_timeout // 60,
                 )
                 signals.write_signal(signal_file, "PAUSED", "Agent stuck: process alive but no signal after timeout.")
+                signal = signals.read_signal(signal_file)
             elif (project_path / "HANDOFF.md").exists():
                 signals.write_signal(signal_file, "PAUSED", "Timeout: agent exited but HANDOFF.md exists.")
-            else:
-                signals.write_signal(signal_file, "WORKING", "Timeout: agent exited without writing signal file.")
-            signal = signals.read_signal(signal_file)
+                signal = signals.read_signal(signal_file)
+            # else: signal stays None — dead agent with no signal is a failure
 
         time.sleep(0.2)
 
-        # Rapid-exit detection — FIX for bug #2 and #3
-        elapsed = time.time() - launch_time
-        if elapsed < config.min_runtime and (signal is None or signal.status != "NO_WORK"):
-            log.warning("")
-            log.warning("Agent exited in %.0fs (minimum: %ds)", elapsed, config.min_runtime)
-            log.warning("  Signal: %s", signal.status if signal else "none")
-            if signal and signal.summary:
-                log.warning("  Details: %s", signal.summary)
-            crash_count += 1
-            log.warning("  Crash count: %d/%d", crash_count, config.max_crashes)
-            signals.clear_signal(signal_file)
-            started_file.unlink(missing_ok=True)
-
-            if crash_count >= config.max_crashes:
-                notifications.notify("ABORTED", "Issue worker crashed repeatedly", "Sosumi")
-                prompt_file.unlink(missing_ok=True)
-                return RunResult(
-                    iterations_completed=iteration - 1,
-                    final_status="aborted",
-                    message=f"{config.max_crashes} consecutive rapid exits.",
-                )
-            log.info("  Waiting 10s before retry...")
-            time.sleep(10)
-            continue  # Retry same iteration
-
-        # Agent ran long enough — reset crash counter
-        log.debug("Agent ran for %.1fs", elapsed)
-        crash_count = 0
+        # Clean up temp files
         signals.clear_signal(signal_file)
         started_file.unlink(missing_ok=True)
         prompt_file.unlink(missing_ok=True)
 
-        if signal is None:
-            log.warning("No signal received. Continuing...")
-            iteration += 1
-            time.sleep(2)
-            continue
+        # Failure detection: no signal or CRASHED (shell wrapper fallback)
+        if signal is None or signal.status == "CRASHED":
+            reason = "no signal written" if signal is None else (signal.summary or "agent crashed")
+            crash_count += 1
+            log.warning("")
+            log.warning("Agent failed: %s (%d/%d)", reason, crash_count, config.max_crashes)
+            if crash_count >= config.max_crashes:
+                notifications.notify("ABORTED", "Issue worker: agents failing", "Sosumi")
+                return RunResult(
+                    iterations_completed=iteration - 1,
+                    final_status="aborted",
+                    message=f"{config.max_crashes} agent failures.",
+                )
+            log.info("  Retrying in 10s...")
+            time.sleep(10)
+            continue  # Retry same iteration
 
         # Display summary
         if signal.summary:
@@ -320,6 +300,7 @@ def run(
             )
 
         if signal.status == "PAUSED":
+            crash_count = 0
             log.info("")
             log.info("╔══════════════════════════════════════════════════════════╗")
             log.info("║  PAUSED — Human action required                        ║")
@@ -380,16 +361,24 @@ def run(
             continue
 
         if signal.status == "WORKING":
+            crash_count = 0
             log.info("")
             log.info("Work unit completed. Continuing to next iteration...")
             time.sleep(2)
             iteration += 1
             continue
 
-        # Unknown signal
-        log.warning("Unknown signal '%s'. Continuing...", signal.status)
-        time.sleep(2)
-        iteration += 1
+        # Unknown signal — don't advance, treat as failure
+        log.warning("Unknown signal '%s'. Treating as failure.", signal.status)
+        crash_count += 1
+        if crash_count >= config.max_crashes:
+            notifications.notify("ABORTED", "Issue worker: unknown signals", "Sosumi")
+            return RunResult(
+                iterations_completed=iteration - 1,
+                final_status="aborted",
+                message=f"Unknown signal '{signal.status}' after {config.max_crashes} failures.",
+            )
+        continue
 
     return RunResult(
         iterations_completed=config.max_iterations,

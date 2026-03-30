@@ -220,8 +220,10 @@ The orchestrator will notify the human and poll until the handoff is complete.
 **IMPORTANT:** You MUST write a signal file when you're done. The orchestrator script watches for this file.
 
 **Signal file format:**
-- Line 1: WORKING, PAUSED, or COMPLETE
+- Line 1: WORKING, PAUSED, COMPLETE, or NO_WORK
 - Lines 2+: Your summary of work completed
+
+**WARNING:** You MUST write a signal file before exiting. If you exit without writing one, the orchestrator treats it as a crash and will retry.
 
 **IMPORTANT:** Use the **Write tool** to create the signal file. Do NOT use Bash `cat >` or `echo >` — those get blocked by the sandbox and the file won't persist.
 
@@ -267,7 +269,7 @@ This signals: "Everything is done, stop the loop."
 7. **Commit often** - Small, atomic commits. Push after each commit.
 8. **Write to SESSION_LOG.md** - Always append your session notes.
 9. **Update LEARNINGS.md sparingly** - Only for truly reusable patterns.
-10. **Write signal file** - Always write SIGNAL.txt with WORKING, PAUSED, or COMPLETE when done.
+10. **Write signal file** - Always write SIGNAL.txt with WORKING, PAUSED, COMPLETE, or NO_WORK when done. Failing to write a signal is treated as a crash.
 11. **Stay focused** - Don't try to do too much. Keep context usage low.
 12. **Use PAUSED for restricted actions** - Never skip work because one step needs human approval. Do all prep, write HANDOFF.md, signal PAUSED.
 

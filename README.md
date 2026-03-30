@@ -64,9 +64,9 @@ Project names are fuzzy-matched against local `~/AI/Projects/` directories. If a
 
 Each agent runs `claude` with `--dangerously-skip-permissions` using settings from `defaults/settings.json` and MCP config from `defaults/mcp.json`.
 
-### Crash detection
+### Failure detection
 
-If an agent exits in under 30 seconds (configurable via `min_runtime`), it counts as a crash. After 3 consecutive crashes, the orchestrator aborts and sends a macOS notification.
+Crash detection is signal-based. An agent fails if it exits without writing a signal file (the shell wrapper writes `CRASHED`) or writes an unknown signal value. Valid signals (`WORKING`, `PAUSED`, `COMPLETE`, `NO_WORK`) are always accepted regardless of how quickly the agent ran. After 3 consecutive failures, the orchestrator aborts and sends a macOS notification.
 
 ### Duplicate prevention
 
@@ -82,8 +82,9 @@ Agents communicate with the orchestrator by writing `SIGNAL.txt` in the project 
 | `PAUSED` | Needs human intervention | Notify and wait for `HANDOFF.md` deletion |
 | `COMPLETE` | All issues done | Stop the loop (exit 0) |
 | `NO_WORK` | No actionable issues found | Stop the loop (exit 0) |
+| `CRASHED` | Agent exited without writing a signal (shell wrapper fallback) | Retry, abort after max crashes |
 
-Signal files are written atomically (write `.tmp`, then rename).
+Signal files are written atomically (write `.tmp`, then rename). If an agent exits without writing a signal, the shell wrapper writes `CRASHED` so the orchestrator detects the failure immediately rather than waiting for a timeout. Unknown signal values are also treated as failures.
 
 ### PAUSED / Handoff flow
 

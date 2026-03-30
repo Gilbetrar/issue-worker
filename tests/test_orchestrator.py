@@ -556,12 +556,11 @@ class TestRunLoop:
         assert result.iterations_completed == 2
         assert "2" in result.message
 
-    def test_crash_guard_aborts(self, tmp_path: Path, monkeypatch) -> None:
-        """Rapid exits (elapsed < min_runtime) should trigger crash abort."""
+    def test_crashed_signal_aborts(self, tmp_path: Path, monkeypatch) -> None:
+        """CRASHED signal (shell wrapper fallback) should trigger crash abort."""
         launch_calls, config = _setup_run(
             monkeypatch, tmp_path,
-            signal=Signal(status="WORKING", summary="fast exit"),
-            time_step=0.5,  # elapsed = 0.5s, well under min_runtime=3
+            signal=Signal(status="CRASHED", summary="agent exited without signal"),
         )
         config.max_crashes = 3
         config.max_iterations = 10
@@ -569,8 +568,25 @@ class TestRunLoop:
         result = _run_with(tmp_path, config, max_iterations=10)
 
         assert result.final_status == "aborted"
-        assert "rapid exit" in result.message.lower()
+        assert "failures" in result.message.lower()
         assert len(launch_calls) == 3  # 3 crashes then abort
+
+    def test_quick_exit_with_valid_signal_not_crash(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A quick exit with a valid WORKING signal should NOT count as crash."""
+        launch_calls, config = _setup_run(
+            monkeypatch, tmp_path,
+            signal=Signal(status="WORKING", summary="fast but valid"),
+            time_step=0.5,  # very fast exit
+        )
+        config.max_iterations = 3
+
+        result = _run_with(tmp_path, config, max_iterations=3)
+
+        # Should iterate normally, not abort
+        assert result.final_status == "max_iterations"
+        assert result.iterations_completed == 3
 
     def test_launch_failure_aborts(self, tmp_path: Path, monkeypatch) -> None:
         """Launcher returning False should retry then abort."""
@@ -661,20 +677,19 @@ class TestRunLoop:
         assert any("PAUSED" in str(call) for call in notify_calls)
         assert result.final_status == "max_iterations"
 
-    def test_timeout_no_signal_continues(self, tmp_path: Path, monkeypatch) -> None:
-        """Timeout with no signal and dead agent should continue."""
-        _calls, config = _setup_run(
+    def test_timeout_no_signal_is_failure(self, tmp_path: Path, monkeypatch) -> None:
+        """Timeout with no signal and dead agent should count as failure."""
+        launch_calls, config = _setup_run(
             monkeypatch, tmp_path,
             signal=None,  # Timeout — no signal
         )
+        config.max_crashes = 3
+        config.max_iterations = 10
 
-        # wait_for_signal returns None → orchestrator writes a fallback signal.
-        # After the fallback, it reads the signal file.  Because _is_process_alive
-        # returns False and there's no HANDOFF.md, the fallback is WORKING.
-        result = _run_with(tmp_path, config, max_iterations=2)
+        result = _run_with(tmp_path, config, max_iterations=10)
 
-        assert result.final_status == "max_iterations"
-        assert result.iterations_completed == 2
+        assert result.final_status == "aborted"
+        assert len(launch_calls) == 3  # retries then aborts
 
     def test_wait_for_agent_exit_called_between_iterations(
         self, tmp_path: Path, monkeypatch
@@ -700,3 +715,35 @@ class TestRunLoop:
         assert wait_calls[0][0] is None
         assert wait_calls[1][0] == 99999
         assert wait_calls[2][0] == 99999
+
+    def test_unknown_signal_treated_as_failure(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Unknown signal values should not advance iteration."""
+        launch_calls, config = _setup_run(
+            monkeypatch, tmp_path,
+            signal=Signal(status="BANANA", summary="not a real signal"),
+        )
+        config.max_crashes = 3
+        config.max_iterations = 10
+
+        result = _run_with(tmp_path, config, max_iterations=10)
+
+        assert result.final_status == "aborted"
+        assert "BANANA" in result.message
+        assert len(launch_calls) == 3
+
+    def test_no_work_quick_exit_not_crash(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """NO_WORK with quick exit should not count as crash."""
+        _calls, config = _setup_run(
+            monkeypatch, tmp_path,
+            signal=Signal(status="NO_WORK", summary="nothing to do"),
+            time_step=0.5,  # very quick
+        )
+
+        result = _run_with(tmp_path, config, max_iterations=5)
+
+        assert result.final_status == "complete"
+        assert "no actionable" in result.message.lower()
