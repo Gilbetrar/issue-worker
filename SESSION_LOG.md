@@ -175,3 +175,23 @@ Raw session history. Agents: append here, read LEARNINGS.md instead.
 **Codebase facts discovered:**
 - Test count went from 64 to 75 with the 11 new sync tests
 - The `Closes #N` keyword in commit messages auto-closes GitHub issues on push
+
+---
+
+## Agent Session - Issue #10
+
+**Worked on:** Issue #10 - Prefer opening new agent sessions in Terminal tabs, not windows
+
+**What I did:**
+- Refactored `terminal.py` to extract `_build_applescript()`, `_write_temp_script()`, and `_invoke_osascript()` as testable units
+- Modified the AppleScript to use System Events `keystroke "t" using command down` (Cmd+T) when Terminal already has a window open, falling back to `do script` (new window) when no windows exist
+- Added 17 tests in `tests/test_terminal.py` covering AppleScript content, subprocess invocation, retry logic, and integration
+
+**What I learned:**
+- Terminal.app has no native AppleScript command to create a tab — the only reliable approaches use System Events (keystroke or menu click)
+- `do script cmd in front window` runs in the *selected tab* of that window, which is the newly-created tab after Cmd+T
+- The original code avoided System Events for the initial launch but that's unavoidable for tab creation
+
+**Codebase facts discovered:**
+- Test count went from 75 to 92 with the 17 new terminal tests
+- This project is Python-only (no package.json); checks are `uv run ruff check` and `uv run pytest`
