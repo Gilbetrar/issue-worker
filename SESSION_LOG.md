@@ -255,3 +255,23 @@ Raw session history. Agents: append here, read LEARNINGS.md instead.
 
 **Mistakes made:**
 - None — previous iterations already committed #10 and #11, so I correctly identified the next available issue
+
+---
+
+## Agent Session - Issue #13
+
+**Worked on:** Issue #13 - Make agent signal handling explicit and failure-safe
+
+**What I learned:**
+- The timing-based rapid-exit guard was a heuristic for crash detection that became unnecessary once signals were made explicit
+- Shell wrapper fallback (CRASHED) is needed for fast failure detection — without it the orchestrator would poll until timeout
+- crash_count reset must happen inside each valid signal handler, NOT before unknown signal detection — otherwise unknown signals reset crash_count to 0 on every iteration and the abort threshold is never reached (caused an infinite loop in tests)
+- Removing `min_runtime` from Config also simplifies test setup (no more time_step tuning)
+
+**Codebase facts discovered:**
+- Test count: 115 (3 new tests for CRASHED, unknown signal, and quick-valid-exit)
+- Signal states: WORKING, PAUSED, COMPLETE, NO_WORK are agent-written; CRASHED is shell-wrapper-written
+- The `time.time` mock is no longer needed since timing-based crash detection was removed
+
+**Mistakes made:**
+- Initially placed `crash_count = 0` before unknown signal check, which made the unknown signal handler unable to accumulate crashes (reset to 0 every loop). Fixed by moving reset into each valid handler

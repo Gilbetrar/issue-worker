@@ -14,7 +14,7 @@ Distilled patterns for future agents. Keep under 100 lines.
 
 ```bash
 uv run ruff check src/ tests/   # Lint (src + tests)
-uv run pytest tests/ -v         # Tests (112 tests across 8 files)
+uv run pytest tests/ -v         # Tests (115 tests across 8 files)
 uv add --dev <package>          # Add dev dependency
 ```
 
@@ -40,11 +40,14 @@ uv add --dev <package>          # Add dev dependency
 
 ## Signal Statuses
 
-Agents can write these to SIGNAL.txt:
+Agents write these to SIGNAL.txt:
 - `WORKING` — completed work, spawn next iteration
 - `PAUSED` — needs human intervention (write HANDOFF.md too)
 - `COMPLETE` — all issues done, stop the loop
 - `NO_WORK` — nothing actionable found (not a crash, stops the loop)
+- `CRASHED` — shell wrapper fallback when agent exits without writing a signal
+
+Failure detection is signal-based (not timing-based). Missing signals, CRASHED, and unknown values count as failures. Valid signals always accepted regardless of speed.
 
 ## Concurrency Protection
 
@@ -62,8 +65,8 @@ Agents can write these to SIGNAL.txt:
 ## Testing run()
 
 - `_setup_run()` helper in test_orchestrator.py mocks ~10 deps; use keyword overrides per test
-- `time_step` parameter controls crash guard: 50s (normal) vs 0.5s (triggers crash detection at min_runtime=3)
 - The launcher mock must write `.issue-worker-started` with a fake PID for _wait_for_file to pass
+- crash_count reset is inside each valid signal handler — NOT before unknown signal check
 
 ## Key Gotchas
 
