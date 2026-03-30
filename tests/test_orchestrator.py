@@ -1,4 +1,4 @@
-"""Tests for learnings consolidation in issue_worker.orchestrator."""
+"""Tests for issue_worker.orchestrator module."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from issue_worker.orchestrator import (
     Config,
     _run_consolidation,
     _should_consolidate,
+    _wait_for_agent_exit,
 )
 
 
@@ -151,3 +152,39 @@ class TestRunConsolidation:
         monkeypatch.setattr("issue_worker.orchestrator.CONSOLIDATION_TIMEOUT", 0)
         _run_consolidation(tmp_path, config, _make_launcher(calls))
         assert len(calls) == 1
+
+
+class TestWaitForAgentExit:
+    """Tests for _wait_for_agent_exit — the block-while-alive gate."""
+
+    def test_returns_immediately_if_pid_is_none(self) -> None:
+        _wait_for_agent_exit(None)  # Should not block
+
+    def test_returns_immediately_if_pid_is_none_with_label(self) -> None:
+        _wait_for_agent_exit(None, "test")  # Should not block
+
+    def test_returns_immediately_if_process_dead(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "issue_worker.orchestrator._is_process_alive", lambda pid: False
+        )
+        _wait_for_agent_exit(12345)  # Should not block
+
+    def test_blocks_until_process_exits(self, monkeypatch) -> None:
+        # alive_count=3: 1 consumed by guard check, 2 by while loop iterations
+        alive_count = [3]
+        sleep_calls: list[float] = []
+
+        def fake_alive(pid: int) -> bool:
+            if alive_count[0] > 0:
+                alive_count[0] -= 1
+                return True
+            return False
+
+        monkeypatch.setattr("issue_worker.orchestrator._is_process_alive", fake_alive)
+        monkeypatch.setattr(
+            "issue_worker.orchestrator.time.sleep",
+            lambda s: sleep_calls.append(s),
+        )
+        _wait_for_agent_exit(12345, "test")
+        assert len(sleep_calls) == 2
+        assert all(s == 5 for s in sleep_calls)

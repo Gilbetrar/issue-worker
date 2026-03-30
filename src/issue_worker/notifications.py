@@ -47,7 +47,7 @@ def prompt_stuck_action(pid: int, project: str) -> str:
         f'message "PID {pid} in {_escape(project)} appears blocked on a permission prompt.\\n\\n'
         f'Kill it and resume, or leave it running for manual intervention?" '
         f'buttons {{"Kill & Resume", "Leave Running"}} '
-        f'default button "Leave Running" '
+        f'default button "Kill & Resume" '
         f'giving up after 300'
     )
     try:

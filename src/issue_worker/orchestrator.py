@@ -98,12 +98,16 @@ def run(
     crash_count = 0
     iteration = 1
     crash_tested = False  # Test mode: only simulate crash once on iteration 2
+    prev_pid: int | None = None  # Track previous agent PID to prevent duplicates
 
     while iteration <= config.max_iterations:
         log.info("")
         log.info("─" * 59)
         log.info("  Iteration %d of %d", iteration, config.max_iterations)
         log.info("─" * 59)
+
+        # Block if previous agent is still alive — never spawn duplicates
+        _wait_for_agent_exit(prev_pid, "previous iteration")
 
         # Consolidation: distill SESSION_LOG.md at iteration 1 and every 10th
         if _should_consolidate(iteration):
@@ -199,6 +203,7 @@ def run(
 
         pid_str = started_file.read_text().strip() if started_file.exists() else ""
         pid = int(pid_str) if pid_str.isdigit() else None
+        prev_pid = pid  # Track for block-while-alive gate
         log.info("Agent started (PID: %s)", pid or "unknown")
         # Keep started_file — we need the PID for liveness checks on timeout
 
@@ -231,7 +236,7 @@ def run(
 
         # Rapid-exit detection — FIX for bug #2 and #3
         elapsed = time.time() - launch_time
-        if elapsed < config.min_runtime:
+        if elapsed < config.min_runtime and (signal is None or signal.status != "NO_WORK"):
             log.warning("")
             log.warning("Agent exited in %.0fs (minimum: %ds)", elapsed, config.min_runtime)
             log.warning("  Signal: %s", signal.status if signal else "none")
@@ -289,6 +294,16 @@ def run(
                 message="All issues complete.",
             )
 
+        if signal.status == "NO_WORK":
+            log.info("")
+            _banner("No actionable work found")
+            log.info("  Project: %s", project_path)
+            return RunResult(
+                iterations_completed=iteration,
+                final_status="complete",
+                message="No actionable issues found.",
+            )
+
         if signal.status == "PAUSED":
             log.info("")
             log.info("╔══════════════════════════════════════════════════════════╗")
@@ -309,14 +324,20 @@ def run(
                 if action == "kill":
                     log.info("  Killing stuck agent (PID %d)...", pid)
                     _kill_agent(pid)
+                    prev_pid = None
                     started_file.unlink(missing_ok=True)
                     time.sleep(2)
                     log.info("  Agent killed. Resuming orchestration...")
                     iteration += 1
                     continue
                 else:
-                    log.info("  Leaving agent running. Waiting for manual intervention...")
+                    # Block until agent exits — never advance with a live agent
+                    log.info("  Leaving agent running. Waiting for it to exit...")
                     log.info("  To kill manually: kill %d", pid)
+                    _wait_for_agent_exit(pid, "stuck agent")
+                    prev_pid = None
+                    log.info("  Stuck agent exited. Restarting iteration...")
+                    continue  # Retry same iteration with fresh agent
 
             notifications.notify("PAUSED", "Issue worker needs human action")
 
@@ -552,6 +573,22 @@ def _kill_agent(pid: int) -> None:
         pass
     except PermissionError:
         get_logger().warning("  Cannot kill PID %d (permission denied)", pid)
+
+
+def _wait_for_agent_exit(pid: int | None, label: str = "") -> None:
+    """Block until the given agent process is no longer alive.
+
+    This is the primary guard against duplicate concurrent agents.
+    Called before every launcher() invocation.
+    """
+    if pid is None or not _is_process_alive(pid):
+        return
+    log = get_logger()
+    suffix = f" ({label})" if label else ""
+    log.info("  Previous agent (PID %d) still alive%s. Waiting for it to exit...", pid, suffix)
+    while _is_process_alive(pid):
+        time.sleep(5)
+    log.info("  Previous agent exited.")
 
 
 def _defaults_dir() -> Path:

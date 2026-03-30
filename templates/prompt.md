@@ -234,6 +234,15 @@ WORKING
 ```
 This signals: "I did useful work, there's more to do, spawn another instance."
 
+**When there's no actionable work (all issues closed, on-hold, or assigned):**
+
+Write to `{PROJECT_PATH}/SIGNAL.txt` with content:
+```
+NO_WORK
+<your summary here>
+```
+This signals: "I checked but found nothing to do. Not a crash — just nothing actionable."
+
 **When ALL issues are complete (no more work to do):**
 
 Write to `{PROJECT_PATH}/SIGNAL.txt` with content:

@@ -9,7 +9,7 @@ from pathlib import Path
 
 @dataclass
 class Signal:
-    status: str  # WORKING, PAUSED, COMPLETE
+    status: str  # WORKING, PAUSED, COMPLETE, NO_WORK
     summary: str
 
     def __str__(self) -> str:
