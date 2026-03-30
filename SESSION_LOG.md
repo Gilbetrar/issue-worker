@@ -234,3 +234,24 @@ Raw session history. Agents: append here, read LEARNINGS.md instead.
 
 **Mistakes made:**
 - None
+
+---
+
+## Agent Session - Issue #12
+
+**Worked on:** Issue #12 - Expand test coverage to the run loop, CLI, and prelaunch gating
+
+**What I learned:**
+- Testing `run()` requires mocking ~10 dependencies (sync, time, signals, launcher, notifications, prompts, process liveness)
+- A `_setup_run()` helper with keyword overrides keeps individual tests focused and readable
+- `time.time` mock needs careful step size: 50s for normal flow (above min_runtime=3), 0.5s for crash tests (below min_runtime)
+- The HANDOFF.md override test needs the launcher to create the file (clean slate deletes it first), and time.sleep to delete it
+- CLI tests need `Path.home()` mocked for CI portability (runner lacks ~/AI/Projects/)
+
+**Codebase facts discovered:**
+- Test count went from 75 to 112 (37 new tests: 12 run loop + 8 CLI + 17 terminal from prior iteration)
+- CLI exit codes: 0 = complete/no_work, 1 = max_iterations or validation failure, 2 = error/aborted
+- The orchestrator has 3 separate abort paths: sync failure (error), launch/start failures (aborted), crash guard (aborted)
+
+**Mistakes made:**
+- None — previous iterations already committed #10 and #11, so I correctly identified the next available issue

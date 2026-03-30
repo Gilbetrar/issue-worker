@@ -14,7 +14,7 @@ Distilled patterns for future agents. Keep under 100 lines.
 
 ```bash
 uv run ruff check src/ tests/   # Lint (src + tests)
-uv run pytest tests/ -v         # Tests (92 tests across 7 files)
+uv run pytest tests/ -v         # Tests (112 tests across 8 files)
 uv add --dev <package>          # Add dev dependency
 ```
 
@@ -58,6 +58,12 @@ Agents can write these to SIGNAL.txt:
 - All git commands check return codes; failures are surfaced, not ignored
 - If changes were stashed and sync fails, `_try_restore_stash()` attempts best-effort restore
 - Tests mock `subprocess.run` via `_mock_subprocess()` helper that dispatches by git subcommand
+
+## Testing run()
+
+- `_setup_run()` helper in test_orchestrator.py mocks ~10 deps; use keyword overrides per test
+- `time_step` parameter controls crash guard: 50s (normal) vs 0.5s (triggers crash detection at min_runtime=3)
+- The launcher mock must write `.issue-worker-started` with a fake PID for _wait_for_file to pass
 
 ## Key Gotchas
 
