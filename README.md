@@ -70,7 +70,7 @@ Crash detection is signal-based. An agent fails if it exits without writing a si
 
 ### Duplicate prevention
 
-The orchestrator tracks the PID of each agent and blocks before launching the next one until the previous process has exited.
+The orchestrator tracks the PID of each agent and waits up to 30 seconds for the previous process to exit before launching the next one. If the process is still alive after that (typically orphaned MCP servers lingering after Claude finishes), the orchestrator detaches and proceeds — it does not kill the process.
 
 ## Signals and Handoff
 
@@ -136,7 +136,7 @@ uv sync --group dev
 # Lint
 uv run ruff check src/ tests/
 
-# Test (92 tests)
+# Test (116 tests)
 uv run pytest tests/ -v
 
 # Self-test mode (validates orchestration without real agents)
