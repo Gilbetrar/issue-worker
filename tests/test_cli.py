@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -46,8 +47,13 @@ def test_numeric_positional_is_max_iterations(monkeypatch: pytest.MonkeyPatch) -
     assert seen["input_name"] is None
 
 
-def test_complete_result_exits_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_complete_result_exits_zero(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Successful completion should exit with status 0."""
+    # Create fake project directory with .git so the is_dir() check passes
+    (tmp_path / "AI" / "Projects" / "issue-worker").mkdir(parents=True)
+    (tmp_path / "AI" / "Projects" / "issue-worker" / ".git").mkdir()
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+
     monkeypatch.setattr(cli, "select_project", lambda **_: "issue-worker")
     monkeypatch.setattr(cli, "get_repo_url", lambda _path: "Gilbetrar/issue-worker")
     monkeypatch.setattr(cli, "run", lambda **_: RunResult(1, "complete", "done"))
