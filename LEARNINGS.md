@@ -56,6 +56,7 @@ Failure detection is signal-based (not timing-based). Missing signals, CRASHED, 
 - Detach is safe because the previous agent's signal was already processed; lingering processes are just orphaned MCP servers
 - The PAUSED "leave" path blocks until the stuck agent exits (never advances)
 - Dialog default is "Kill & Resume" (safer than "Leave Running")
+- Consolidation uses the same lifecycle: PID via `.issue-worker-consolidation-started`, startup verification, process-exit gating
 
 ## Repo Sync
 
@@ -68,6 +69,7 @@ Failure detection is signal-based (not timing-based). Missing signals, CRASHED, 
 
 - `_setup_run()` helper in test_orchestrator.py mocks ~10 deps; use keyword overrides per test
 - The launcher mock must write `.issue-worker-started` with a fake PID for _wait_for_file to pass
+- `_make_launcher(calls, started_file=path)` writes a fake PID to the given path on successful launch
 - crash_count reset is inside each valid signal handler — NOT before unknown signal check
 - For stuck-agent paths, both "kill" and "leave" retry the same iteration — neither consumes iteration budget
 
@@ -75,7 +77,6 @@ Failure detection is signal-based (not timing-based). Missing signals, CRASHED, 
 
 - Pre-existing `HANDOFF.md` at startup blocks launch with a BLOCKED notification — orchestrator polls until operator deletes it (issue #14)
 - Stuck-agent "kill" path retries the same iteration (fixed in #15); "leave" path already did this
-- Consolidation launches its own Claude session; if that path stays asynchronous, it needs the same liveness/serialization guarantees as normal worker launches
 - Editable installs work today, but prompt/default loading is repo-relative; treat wheel packaging as suspect until templates/defaults are explicitly packaged and tested
 
 ## Key Gotchas

@@ -4,6 +4,31 @@ Raw session history. Agents: append here, read LEARNINGS.md instead.
 
 ---
 
+## Agent Session - Issue #16
+
+**Worked on:** Issue #16 - Serialize learnings consolidation with the main worker lifecycle
+
+**What I did:**
+- Added PID tracking to `_run_consolidation()` via `.issue-worker-consolidation-started` file
+- Added startup verification using `_wait_for_file()` (same gate as normal workers)
+- Added process-exit gating via `_wait_for_agent_exit()` after signal/timeout
+- Updated tab_cmd for both test and production modes to write `$$ > started_file`
+- Updated `_make_launcher` test helper to support `started_file` parameter
+- Added 7 new tests in `TestConsolidationSerialization` class
+- Added 1 integration test in `TestConsolidationRunIntegration` verifying ordering
+- Updated existing consolidation tests to work with new started-file requirement
+- Updated README with serialization guarantees
+- Added `.issue-worker-*` files to .gitignore
+
+**Codebase facts discovered:**
+- `_wait_for_file` and `_wait_for_agent_exit` are generic enough to reuse for consolidation without modification
+- Fake PIDs (like 99998) pass `_is_process_alive` as dead processes (ProcessLookupError), so `_wait_for_agent_exit` returns immediately in tests without mocking
+
+**Also noted:**
+- Issue #14 is fully implemented but still open. Couldn't close it because GH_TOKEN env var is set to work account (benbateman-work), not personal (Gilbetrar).
+
+---
+
 ## Agent Session - Issue #1
 
 **Worked on:** Issue #1 - Add logging system
