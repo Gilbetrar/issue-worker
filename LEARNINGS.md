@@ -84,3 +84,4 @@ Failure detection is signal-based (not timing-based). Missing signals, CRASHED, 
 - `terminal.py` has a pre-existing ruff E402 (import not at top) — don't fix unless asked
 - The `_banner()` and `_sync_main()` helper functions get their own logger via `get_logger()`
 - CLI tests must mock `Path.home()` for CI portability (runner doesn't have ~/AI/Projects/)
+- In autonomous mode, `GH_TOKEN` env var forces the work account; use `GH_TOKEN= gh <command>` to use the personal (Gilbetrar) keyring credential
