@@ -73,7 +73,7 @@ Failure detection is signal-based (not timing-based). Missing signals, CRASHED, 
 
 ## Review Follow-ups
 
-- Do not delete a pre-existing `HANDOFF.md` at startup without first deciding whether it represents unresolved paused work from a prior run
+- Pre-existing `HANDOFF.md` at startup blocks launch with a BLOCKED notification — orchestrator polls until operator deletes it (issue #14)
 - The stuck-agent "kill" path should retry the interrupted work unit, not increment iteration and move on
 - Consolidation launches its own Claude session; if that path stays asynchronous, it needs the same liveness/serialization guarantees as normal worker launches
 - Editable installs work today, but prompt/default loading is repo-relative; treat wheel packaging as suspect until templates/defaults are explicitly packaged and tested

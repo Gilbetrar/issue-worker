@@ -97,6 +97,10 @@ When an agent can't complete a step (e.g., needs manual approval):
 5. Human deletes `HANDOFF.md`
 6. Orchestrator detects deletion and resumes
 
+### Restart-safe handoffs
+
+If the orchestrator restarts while a `HANDOFF.md` exists from a prior run, it **blocks** before entering the launch loop. No agents are spawned until the operator resolves (deletes) the file. A `BLOCKED` notification is sent with instructions.
+
 ### Stuck agent detection
 
 If the poll timeout expires and the agent process is still alive (likely stuck on a permission prompt), the orchestrator sends a notification and offers to kill the process or wait.

@@ -275,3 +275,26 @@ Raw session history. Agents: append here, read LEARNINGS.md instead.
 
 **Mistakes made:**
 - Initially placed `crash_count = 0` before unknown signal check, which made the unknown signal handler unable to accumulate crashes (reset to 0 every loop). Fixed by moving reset into each valid handler
+
+---
+
+## Agent Session - Issue #14
+
+**Worked on:** Issue #14 - Make paused handoffs restart-safe instead of deleting unresolved HANDOFF.md
+
+**What I did:**
+- Added pre-loop HANDOFF.md check in `run()` that blocks with a BLOCKED notification until the operator resolves (deletes) the file
+- Added 6 tests: blocks until resolved, never deleted by orchestrator, no-handoff proceeds normally, sends notification, resolved allows full loop, same-run cleanup still works
+- Updated LEARNINGS.md and README.md with restart-safe handoff semantics
+- Also committed previously lingering docs changes from issue #13 review follow-ups
+
+**What I learned:**
+- When mocking `time.sleep` for pre-loop blocking behavior, the same mock gets called during the iteration loop too — need to scope assertions to the right phase
+- The per-iteration clean-slate HANDOFF.md deletion (line 150) is harmless for same-run cases because the PAUSED handler already waited for resolution
+
+**Codebase facts discovered:**
+- The clean-slate section (lines 149-151) deletes SIGNAL.txt, HANDOFF.md, and .issue-worker-started at the start of every iteration
+- `_setup_run()` helper already mocks notifications.notify, so handoff tests that need to track notify calls must re-monkeypatch it
+
+**Mistakes made:**
+- First test run: `test_preexisting_handoff_never_deleted_by_orchestrator` failed because the sleep mock's unlink call ran during post-signal sleep (line 270) after the file was already gone. Fixed by scoping the file-existence check to the first N sleep calls
