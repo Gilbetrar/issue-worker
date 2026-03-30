@@ -63,3 +63,150 @@ def test_complete_result_exits_zero(monkeypatch: pytest.MonkeyPatch, tmp_path: P
         cli.main()
 
     assert excinfo.value.code == 0
+
+
+def _setup_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Wire up Path.home() and create a fake project directory."""
+    (tmp_path / "AI" / "Projects" / "myproj").mkdir(parents=True)
+    (tmp_path / "AI" / "Projects" / "myproj" / ".git").mkdir()
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+
+
+def test_max_iterations_result_exits_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """max_iterations final status should exit with code 1."""
+    _setup_cli(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "select_project", lambda **_: "myproj")
+    monkeypatch.setattr(cli, "get_repo_url", lambda _path: "Gilbetrar/myproj")
+    monkeypatch.setattr(cli, "run", lambda **_: RunResult(10, "max_iterations", "done"))
+    monkeypatch.setattr(sys, "argv", ["issue-worker", "myproj"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main()
+
+    assert excinfo.value.code == 1
+
+
+def test_error_result_exits_two(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Error or aborted final status should exit with code 2."""
+    _setup_cli(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "select_project", lambda **_: "myproj")
+    monkeypatch.setattr(cli, "get_repo_url", lambda _path: "Gilbetrar/myproj")
+    monkeypatch.setattr(cli, "run", lambda **_: RunResult(0, "error", "sync failed"))
+    monkeypatch.setattr(sys, "argv", ["issue-worker", "myproj"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main()
+
+    assert excinfo.value.code == 2
+
+
+def test_aborted_result_exits_two(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Aborted final status should also exit with code 2."""
+    _setup_cli(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "select_project", lambda **_: "myproj")
+    monkeypatch.setattr(cli, "get_repo_url", lambda _path: "Gilbetrar/myproj")
+    monkeypatch.setattr(cli, "run", lambda **_: RunResult(2, "aborted", "crashed"))
+    monkeypatch.setattr(sys, "argv", ["issue-worker", "myproj"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main()
+
+    assert excinfo.value.code == 2
+
+
+def test_no_project_selected_exits_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """select_project returning None should exit with code 1."""
+    _setup_cli(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "select_project", lambda **_: None)
+    monkeypatch.setattr(sys, "argv", ["issue-worker", "nonexistent"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main()
+
+    assert excinfo.value.code == 1
+
+
+def test_not_a_git_repo_exits_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Project directory without .git should exit with code 1."""
+    (tmp_path / "AI" / "Projects" / "notgit").mkdir(parents=True)
+    # No .git directory
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(cli, "select_project", lambda **_: "notgit")
+    monkeypatch.setattr(sys, "argv", ["issue-worker", "notgit"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main()
+
+    assert excinfo.value.code == 1
+
+
+def test_no_repo_url_exits_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """get_repo_url returning None should exit with code 1."""
+    _setup_cli(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "select_project", lambda **_: "myproj")
+    monkeypatch.setattr(cli, "get_repo_url", lambda _path: None)
+    monkeypatch.setattr(sys, "argv", ["issue-worker", "myproj"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main()
+
+    assert excinfo.value.code == 1
+
+
+def test_max_iterations_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """--max-iterations flag should override the default."""
+    _setup_cli(monkeypatch, tmp_path)
+
+    captured: dict = {}
+
+    def capture_run(**kwargs):
+        captured.update(kwargs)
+        return RunResult(1, "complete", "done")
+
+    monkeypatch.setattr(cli, "select_project", lambda **_: "myproj")
+    monkeypatch.setattr(cli, "get_repo_url", lambda _path: "Gilbetrar/myproj")
+    monkeypatch.setattr(cli, "run", capture_run)
+    monkeypatch.setattr(sys, "argv", ["issue-worker", "myproj", "--max-iterations", "42"])
+
+    with pytest.raises(SystemExit):
+        cli.main()
+
+    assert captured["config"].max_iterations == 42
+
+
+def test_test_flag_sets_test_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """--test flag should set config.test_mode and use_test_launcher."""
+    _setup_cli(monkeypatch, tmp_path)
+
+    captured: dict = {}
+
+    def capture_run(**kwargs):
+        captured.update(kwargs)
+        return RunResult(1, "complete", "done")
+
+    monkeypatch.setattr(cli, "select_project", lambda **_: "myproj")
+    monkeypatch.setattr(cli, "get_repo_url", lambda _path: "Gilbetrar/myproj")
+    monkeypatch.setattr(cli, "run", capture_run)
+    monkeypatch.setattr(sys, "argv", ["issue-worker", "myproj", "--test"])
+
+    with pytest.raises(SystemExit):
+        cli.main()
+
+    assert captured["config"].test_mode is True
+    assert captured["use_test_launcher"] is True

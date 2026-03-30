@@ -9,11 +9,15 @@ from unittest.mock import MagicMock
 from issue_worker.orchestrator import (
     CONSOLIDATION_LINE_THRESHOLD,
     Config,
+    RunResult,
+    SyncResult,
     _run_consolidation,
     _should_consolidate,
     _sync_main,
     _wait_for_agent_exit,
+    run,
 )
+from issue_worker.signals import Signal
 
 
 class TestShouldConsolidate:
@@ -399,3 +403,300 @@ class TestSyncMain:
         assert result.success is False
         # Should have called stash twice: once to stash, once to pop (restore)
         assert len(stash_calls) == 2
+
+
+# ── Helpers for run() tests ────────────────────────────────────────
+
+
+def _setup_run(
+    monkeypatch,
+    tmp_path: Path,
+    *,
+    sync_ok: bool = True,
+    signal: Signal | None = Signal(status="WORKING", summary="did work"),
+    launcher_ok: bool = True,
+    agent_starts: bool = True,
+    time_step: float = 50.0,
+) -> tuple[list[tuple[str, str]], Config]:
+    """Wire up common mocks for orchestrator.run() and return (launch_calls, config)."""
+    launch_calls: list[tuple[str, str]] = []
+    started_file = tmp_path / ".issue-worker-started"
+
+    # Time: each call advances by time_step so elapsed = time_step per iteration
+    counter = [0.0]
+
+    def fake_time() -> float:
+        counter[0] += time_step
+        return counter[0]
+
+    monkeypatch.setattr("issue_worker.orchestrator.time.time", fake_time)
+    monkeypatch.setattr("issue_worker.orchestrator.time.sleep", lambda _: None)
+
+    # Sync
+    monkeypatch.setattr(
+        "issue_worker.orchestrator._sync_main",
+        lambda _: SyncResult(success=sync_ok, message="test"),
+    )
+
+    # Skip consolidation & agent-exit wait
+    monkeypatch.setattr("issue_worker.orchestrator._should_consolidate", lambda _: False)
+    monkeypatch.setattr("issue_worker.orchestrator._wait_for_agent_exit", lambda *a, **kw: None)
+
+    # Prompt rendering
+    monkeypatch.setattr("issue_worker.orchestrator.prompts.render_prompt", lambda **kw: "test")
+
+    # Process liveness
+    monkeypatch.setattr("issue_worker.orchestrator._is_process_alive", lambda pid: False)
+
+    # Notifications
+    monkeypatch.setattr("issue_worker.orchestrator.notifications.notify", lambda *a, **kw: None)
+    monkeypatch.setattr("issue_worker.orchestrator.notifications.notify_stuck_agent", lambda **kw: None)
+    monkeypatch.setattr("issue_worker.orchestrator.notifications.prompt_stuck_action", lambda *a, **kw: "kill")
+
+    # Launcher
+    def fake_launcher(cmd: str, title: str) -> bool:
+        launch_calls.append((cmd, title))
+        if agent_starts and launcher_ok:
+            started_file.write_text("99999\n")
+        return launcher_ok
+
+    monkeypatch.setattr("issue_worker.orchestrator.terminal.open_terminal_tab_test", fake_launcher)
+    monkeypatch.setattr("issue_worker.orchestrator.terminal.open_terminal_tab", fake_launcher)
+
+    # Signal
+    monkeypatch.setattr(
+        "issue_worker.orchestrator.signals.wait_for_signal",
+        lambda path, timeout: signal,
+    )
+
+    config = Config(test_mode=True)
+    return launch_calls, config
+
+
+def _run_with(
+    tmp_path: Path,
+    config: Config,
+    max_iterations: int = 1,
+) -> RunResult:
+    """Call run() with common defaults and a given max_iterations."""
+    config.max_iterations = max_iterations
+    return run(
+        project="test-proj",
+        repo="Gilbetrar/test-proj",
+        project_path=tmp_path,
+        config=config,
+        use_test_launcher=True,
+    )
+
+
+# ── Run loop state transitions ─────────────────────────────────────
+
+
+class TestRunLoop:
+    """Tests for the orchestrator run() state machine."""
+
+    def test_sync_failure_prevents_launch(self, tmp_path: Path, monkeypatch) -> None:
+        """Failed repo sync should abort immediately — launcher never called."""
+        launch_calls, config = _setup_run(monkeypatch, tmp_path, sync_ok=False)
+
+        result = _run_with(tmp_path, config)
+
+        assert result.final_status == "error"
+        assert "sync failed" in result.message.lower()
+        assert launch_calls == []
+
+    def test_complete_signal_stops_loop(self, tmp_path: Path, monkeypatch) -> None:
+        """COMPLETE signal should stop the loop with status 'complete'."""
+        launch_calls, config = _setup_run(
+            monkeypatch, tmp_path,
+            signal=Signal(status="COMPLETE", summary="all done"),
+        )
+
+        result = _run_with(tmp_path, config, max_iterations=5)
+
+        assert result.final_status == "complete"
+        assert result.iterations_completed == 1
+        assert len(launch_calls) == 1
+
+    def test_no_work_signal_stops_loop(self, tmp_path: Path, monkeypatch) -> None:
+        """NO_WORK signal should stop the loop with status 'complete'."""
+        _calls, config = _setup_run(
+            monkeypatch, tmp_path,
+            signal=Signal(status="NO_WORK", summary="nothing to do"),
+        )
+
+        result = _run_with(tmp_path, config)
+
+        assert result.final_status == "complete"
+        assert "no actionable" in result.message.lower()
+
+    def test_working_signal_continues(self, tmp_path: Path, monkeypatch) -> None:
+        """WORKING signal should increment iteration and continue."""
+        launch_calls, config = _setup_run(
+            monkeypatch, tmp_path,
+            signal=Signal(status="WORKING", summary="did stuff"),
+        )
+
+        result = _run_with(tmp_path, config, max_iterations=3)
+
+        assert result.final_status == "max_iterations"
+        assert result.iterations_completed == 3
+        assert len(launch_calls) == 3
+
+    def test_max_iterations_reached(self, tmp_path: Path, monkeypatch) -> None:
+        """Hitting max iterations returns 'max_iterations' status."""
+        _calls, config = _setup_run(
+            monkeypatch, tmp_path,
+            signal=Signal(status="WORKING", summary="work"),
+        )
+
+        result = _run_with(tmp_path, config, max_iterations=2)
+
+        assert result.final_status == "max_iterations"
+        assert result.iterations_completed == 2
+        assert "2" in result.message
+
+    def test_crash_guard_aborts(self, tmp_path: Path, monkeypatch) -> None:
+        """Rapid exits (elapsed < min_runtime) should trigger crash abort."""
+        launch_calls, config = _setup_run(
+            monkeypatch, tmp_path,
+            signal=Signal(status="WORKING", summary="fast exit"),
+            time_step=0.5,  # elapsed = 0.5s, well under min_runtime=3
+        )
+        config.max_crashes = 3
+        config.max_iterations = 10
+
+        result = _run_with(tmp_path, config, max_iterations=10)
+
+        assert result.final_status == "aborted"
+        assert "rapid exit" in result.message.lower()
+        assert len(launch_calls) == 3  # 3 crashes then abort
+
+    def test_launch_failure_aborts(self, tmp_path: Path, monkeypatch) -> None:
+        """Launcher returning False should retry then abort."""
+        launch_calls, config = _setup_run(
+            monkeypatch, tmp_path,
+            launcher_ok=False,
+        )
+        config.max_crashes = 3
+        config.max_iterations = 10
+
+        result = _run_with(tmp_path, config, max_iterations=10)
+
+        assert result.final_status == "aborted"
+        assert len(launch_calls) == 3
+
+    def test_agent_start_failure_aborts(self, tmp_path: Path, monkeypatch) -> None:
+        """Agent never writing started file should retry then abort."""
+        launch_calls, config = _setup_run(
+            monkeypatch, tmp_path,
+            agent_starts=False,
+        )
+        config.max_crashes = 3
+        config.max_iterations = 10
+
+        result = _run_with(tmp_path, config, max_iterations=10)
+
+        assert result.final_status == "aborted"
+        assert "failed to start" in result.message.lower()
+        assert len(launch_calls) == 3
+
+    def test_template_not_found_returns_error(self, tmp_path: Path, monkeypatch) -> None:
+        """Missing prompt template should return error, not crash."""
+        _calls, config = _setup_run(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            "issue_worker.orchestrator.prompts.render_prompt",
+            MagicMock(side_effect=FileNotFoundError("template not found")),
+        )
+
+        result = _run_with(tmp_path, config)
+
+        assert result.final_status == "error"
+        assert "template" in result.message.lower()
+
+    def test_working_plus_handoff_treated_as_paused(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """WORKING signal with HANDOFF.md present should be overridden to PAUSED."""
+        handoff = tmp_path / "HANDOFF.md"
+
+        # Launcher creates HANDOFF.md (simulating agent writing it)
+        started_file = tmp_path / ".issue-worker-started"
+        launch_calls: list[tuple[str, str]] = []
+
+        def launcher_with_handoff(cmd: str, title: str) -> bool:
+            launch_calls.append((cmd, title))
+            started_file.write_text("99999\n")
+            handoff.write_text("needs human action\n")
+            return True
+
+        _calls, config = _setup_run(
+            monkeypatch, tmp_path,
+            signal=Signal(status="WORKING", summary="did work"),
+        )
+        monkeypatch.setattr(
+            "issue_worker.orchestrator.terminal.open_terminal_tab_test",
+            launcher_with_handoff,
+        )
+
+        # time.sleep should delete HANDOFF.md to unblock the wait loop
+        sleep_count = [0]
+
+        def sleep_and_maybe_delete(_: float) -> None:
+            sleep_count[0] += 1
+            if sleep_count[0] >= 3:
+                handoff.unlink(missing_ok=True)
+
+        monkeypatch.setattr("issue_worker.orchestrator.time.sleep", sleep_and_maybe_delete)
+
+        notify_calls: list[tuple] = []
+        monkeypatch.setattr(
+            "issue_worker.orchestrator.notifications.notify",
+            lambda *a, **kw: notify_calls.append(a),
+        )
+
+        result = _run_with(tmp_path, config, max_iterations=1)
+
+        # Should have sent PAUSED notification
+        assert any("PAUSED" in str(call) for call in notify_calls)
+        assert result.final_status == "max_iterations"
+
+    def test_timeout_no_signal_continues(self, tmp_path: Path, monkeypatch) -> None:
+        """Timeout with no signal and dead agent should continue."""
+        _calls, config = _setup_run(
+            monkeypatch, tmp_path,
+            signal=None,  # Timeout — no signal
+        )
+
+        # wait_for_signal returns None → orchestrator writes a fallback signal.
+        # After the fallback, it reads the signal file.  Because _is_process_alive
+        # returns False and there's no HANDOFF.md, the fallback is WORKING.
+        result = _run_with(tmp_path, config, max_iterations=2)
+
+        assert result.final_status == "max_iterations"
+        assert result.iterations_completed == 2
+
+    def test_wait_for_agent_exit_called_between_iterations(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The run loop must call _wait_for_agent_exit with the previous PID."""
+        wait_calls: list[tuple] = []
+
+        def tracking_wait(pid, label=""):
+            wait_calls.append((pid, label))
+
+        _calls, config = _setup_run(
+            monkeypatch, tmp_path,
+            signal=Signal(status="WORKING", summary="work"),
+        )
+        monkeypatch.setattr(
+            "issue_worker.orchestrator._wait_for_agent_exit",
+            tracking_wait,
+        )
+
+        _run_with(tmp_path, config, max_iterations=3)
+
+        # First call has prev_pid=None, subsequent calls have the fake PID
+        assert wait_calls[0][0] is None
+        assert wait_calls[1][0] == 99999
+        assert wait_calls[2][0] == 99999
