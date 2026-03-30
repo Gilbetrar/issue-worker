@@ -195,3 +195,23 @@ Raw session history. Agents: append here, read LEARNINGS.md instead.
 **Codebase facts discovered:**
 - Test count went from 75 to 92 with the 17 new terminal tests
 - This project is Python-only (no package.json); checks are `uv run ruff check` and `uv run pytest`
+
+---
+
+## Agent Session - Issue #9 (follow-up fix)
+
+**Worked on:** Issue #9 - Make repo sync safe before launching agents (stash ordering fix)
+
+**What I did:**
+- Found that a parallel agent had already implemented the main #9 changes (SyncResult, error checking, tests)
+- Fixed a remaining bug: the stash/checkout order was wrong (checkout before stash), which fails when switching branches with a dirty working tree
+- Added returncode check for `git status --porcelain`
+- Committed and pushed the fix; CI passed
+
+**What I learned:**
+- Multiple agents can work concurrently on the same repo — always `git pull` and check recent commits before starting
+- File modification race conditions occur with active hooks/linters — Write tool can fail repeatedly if external processes modify the file between Read and Write
+- The linter auto-deduplicates class definitions and may rename fields
+
+**Mistakes made:**
+- Spent time trying to write the entire file multiple times due to file modification races with linter/hooks
