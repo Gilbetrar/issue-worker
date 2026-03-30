@@ -507,44 +507,51 @@ def _sync_main(project_path: Path) -> SyncResult:
         )
     current_branch = result.stdout.strip()
 
-    # Switch to main if needed
-    if current_branch != "main":
-        log.info("Switching to main branch...")
-        result = subprocess.run(
-            ["git", "checkout", "main"],
-            cwd=project_path,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            return SyncResult(
-                success=False,
-                message=f"Failed to checkout main: {result.stderr.strip()}",
-            )
-
-    # Check for dirty state before pulling
+    # 2. Check for dirty working tree
     status_result = subprocess.run(
         ["git", "status", "--porcelain"],
         cwd=project_path,
         capture_output=True,
         text=True,
     )
+    if status_result.returncode != 0:
+        return SyncResult(
+            success=False,
+            message=f"Failed to check working tree: {status_result.stderr.strip()}",
+        )
     is_dirty = bool(status_result.stdout.strip())
 
+    # 3. Stash dirty changes BEFORE checkout (so checkout doesn't conflict)
     if is_dirty:
         log.info("Working tree has changes. Stashing before sync...")
-        result = subprocess.run(
+        stash_result = subprocess.run(
             ["git", "stash", "--include-untracked"],
             cwd=project_path,
             capture_output=True,
             text=True,
         )
-        if result.returncode != 0:
+        if stash_result.returncode != 0:
             return SyncResult(
                 success=False,
-                message=f"Failed to stash changes: {result.stderr.strip()}",
+                message=f"Failed to stash changes: {stash_result.stderr.strip()}",
             )
         stashed = True
+
+    # 4. Checkout main if needed
+    if current_branch != "main":
+        log.info("Switching to main branch...")
+        checkout_result = subprocess.run(
+            ["git", "checkout", "main"],
+            cwd=project_path,
+            capture_output=True,
+            text=True,
+        )
+        if checkout_result.returncode != 0:
+            _try_restore_stash(project_path, stashed)
+            return SyncResult(
+                success=False,
+                message=f"Failed to checkout main: {checkout_result.stderr.strip()}",
+            )
 
     # Fetch and pull
     log.info("Syncing with remote...")
