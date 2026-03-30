@@ -215,3 +215,22 @@ Raw session history. Agents: append here, read LEARNINGS.md instead.
 
 **Mistakes made:**
 - Spent time trying to write the entire file multiple times due to file modification races with linter/hooks
+
+---
+
+## Agent Session - Issues #10 and #11
+
+**Worked on:** Issue #10 (already done by previous iteration), Issue #11 - Document the real operating model
+
+**What I learned:**
+- Previous iteration (3) committed issue #10 work but didn't close the issue or write session log — always complete all post-work steps
+- Issue #10 was auto-closed by GitHub when the commit with "Closes #10" was pushed, same for #11
+- Git status snapshot at conversation start can be stale — always verify with live `git status`
+
+**Codebase facts discovered:**
+- README was only 19 lines with incorrect command name (`iw` not registered; actual commands are `issue-worker` and `issues`)
+- Config defaults are hardcoded in `orchestrator.Config` dataclass, not configurable via CLI
+- Consolidation runs at iteration 1 and every 10th, triggered when SESSION_LOG.md exceeds 200 lines
+
+**Mistakes made:**
+- None
