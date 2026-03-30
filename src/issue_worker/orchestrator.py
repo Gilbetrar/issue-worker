@@ -100,7 +100,7 @@ def run(
     log.info("Max iterations: %s", config.max_iterations)
     log.info("")
 
-    # Ensure on main and synced — FIX for bug #4 (dirty working tree)
+    # Ensure on main and synced
     sync_result = _sync_main(project_path)
     if not sync_result.success:
         log.error("Repository sync failed: %s", sync_result.message)
