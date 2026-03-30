@@ -45,6 +45,14 @@ class Config:
 
 
 @dataclass
+class SyncResult:
+    """Result of a repository sync operation."""
+
+    success: bool
+    message: str
+
+
+@dataclass
 class RunResult:
     """Result of an orchestrator run."""
 
@@ -93,7 +101,14 @@ def run(
     log.info("")
 
     # Ensure on main and synced — FIX for bug #4 (dirty working tree)
-    _sync_main(project_path)
+    sync_result = _sync_main(project_path)
+    if not sync_result.success:
+        log.error("Repository sync failed: %s", sync_result.message)
+        return RunResult(
+            iterations_completed=0,
+            final_status="error",
+            message=f"Repository sync failed: {sync_result.message}",
+        )
 
     crash_count = 0
     iteration = 1
@@ -469,22 +484,43 @@ def _run_consolidation(
     return False
 
 
-def _sync_main(project_path: Path) -> None:
-    """Ensure we're on main and synced. Handles dirty working tree (bug #4)."""
-    log = get_logger()
+def _sync_main(project_path: Path) -> SyncResult:
+    """Ensure we're on main and synced. Returns structured success/failure.
 
-    # Check current branch
+    On failure, attempts to restore any stashed changes before returning.
+    The orchestrator must not launch agents when this returns success=False.
+    """
+    log = get_logger()
+    stashed = False
+
+    # Detect current branch
     result = subprocess.run(
         ["git", "branch", "--show-current"],
         cwd=project_path,
         capture_output=True,
         text=True,
     )
+    if result.returncode != 0:
+        return SyncResult(
+            success=False,
+            message=f"Failed to detect current branch: {result.stderr.strip()}",
+        )
     current_branch = result.stdout.strip()
 
+    # Switch to main if needed
     if current_branch != "main":
         log.info("Switching to main branch...")
-        subprocess.run(["git", "checkout", "main"], cwd=project_path)
+        result = subprocess.run(
+            ["git", "checkout", "main"],
+            cwd=project_path,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return SyncResult(
+                success=False,
+                message=f"Failed to checkout main: {result.stderr.strip()}",
+            )
 
     # Check for dirty state before pulling
     status_result = subprocess.run(
@@ -497,24 +533,55 @@ def _sync_main(project_path: Path) -> None:
 
     if is_dirty:
         log.info("Working tree has changes. Stashing before sync...")
-        subprocess.run(["git", "stash", "--include-untracked"], cwd=project_path)
+        result = subprocess.run(
+            ["git", "stash", "--include-untracked"],
+            cwd=project_path,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return SyncResult(
+                success=False,
+                message=f"Failed to stash changes: {result.stderr.strip()}",
+            )
+        stashed = True
 
+    # Fetch and pull
     log.info("Syncing with remote...")
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["git", "fetch", "origin"],
             cwd=project_path,
+            capture_output=True,
+            text=True,
             timeout=30,
         )
-        subprocess.run(
+        if result.returncode != 0:
+            _try_restore_stash(project_path, stashed)
+            return SyncResult(
+                success=False,
+                message=f"git fetch failed: {result.stderr.strip()}",
+            )
+
+        result = subprocess.run(
             ["git", "pull", "--rebase"],
             cwd=project_path,
+            capture_output=True,
+            text=True,
             timeout=30,
         )
+        if result.returncode != 0:
+            _try_restore_stash(project_path, stashed)
+            return SyncResult(
+                success=False,
+                message=f"git pull --rebase failed: {result.stderr.strip()}",
+            )
     except subprocess.TimeoutExpired:
-        log.warning("git sync timed out")
+        _try_restore_stash(project_path, stashed)
+        return SyncResult(success=False, message="git sync timed out")
 
-    if is_dirty:
+    # Restore stashed changes
+    if stashed:
         log.info("Restoring stashed changes...")
         result = subprocess.run(
             ["git", "stash", "pop"],
@@ -523,10 +590,34 @@ def _sync_main(project_path: Path) -> None:
             text=True,
         )
         if result.returncode != 0:
-            log.warning("Stash pop failed (possible conflict). Changes remain in stash.")
-            log.warning("  Run 'git stash show' in %s to review.", project_path)
+            return SyncResult(
+                success=False,
+                message=(
+                    f"Stash restore failed (possible conflict). "
+                    f"Changes remain in stash. "
+                    f"Run 'git stash show' in {project_path} to review."
+                ),
+            )
 
     log.info("Working directly on main branch.")
+    return SyncResult(success=True, message="Synced to main.")
+
+
+def _try_restore_stash(project_path: Path, stashed: bool) -> None:
+    """Best-effort stash restore after a sync failure."""
+    if not stashed:
+        return
+    log = get_logger()
+    log.info("Restoring stashed changes after sync failure...")
+    result = subprocess.run(
+        ["git", "stash", "pop"],
+        cwd=project_path,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        log.warning("Could not restore stash: %s", result.stderr.strip())
+        log.warning("  Changes remain in stash. Run 'git stash show' to review.")
 
 
 def _wait_for_file(path: Path, timeout: int, interval: float = 1.0) -> bool:

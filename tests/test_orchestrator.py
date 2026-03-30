@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from issue_worker.orchestrator import (
     CONSOLIDATION_LINE_THRESHOLD,
     Config,
     _run_consolidation,
     _should_consolidate,
+    _sync_main,
     _wait_for_agent_exit,
 )
 
@@ -188,3 +191,211 @@ class TestWaitForAgentExit:
         _wait_for_agent_exit(12345, "test")
         assert len(sleep_calls) == 2
         assert all(s == 5 for s in sleep_calls)
+
+
+def _ok(stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess:
+    """Create a successful CompletedProcess."""
+    return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr=stderr)
+
+
+def _fail(stderr: str = "error") -> subprocess.CompletedProcess:
+    """Create a failed CompletedProcess."""
+    return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=stderr)
+
+
+def _mock_subprocess(responses: dict) -> MagicMock:
+    """Create a subprocess.run mock that dispatches based on the first git arg.
+
+    responses maps a git subcommand (e.g. "branch", "checkout") to a
+    CompletedProcess or callable that returns one.
+    """
+
+    def side_effect(cmd, **kwargs):
+        # Find the git subcommand (first arg after "git")
+        git_idx = cmd.index("git") if "git" in cmd else -1
+        subcommand = cmd[git_idx + 1] if git_idx >= 0 and git_idx + 1 < len(cmd) else ""
+        handler = responses.get(subcommand, _ok())
+        if callable(handler):
+            return handler(cmd, **kwargs)
+        return handler
+
+    mock = MagicMock(side_effect=side_effect)
+    return mock
+
+
+class TestSyncMain:
+    """Tests for _sync_main — repo sync before agent launch."""
+
+    def test_clean_repo_on_main(self, tmp_path: Path, monkeypatch) -> None:
+        """Clean repo already on main: fetch+pull succeed."""
+        mock = _mock_subprocess({
+            "branch": _ok("main\n"),
+            "status": _ok(""),  # clean
+            "fetch": _ok(),
+            "pull": _ok(),
+        })
+        monkeypatch.setattr("issue_worker.orchestrator.subprocess.run", mock)
+
+        result = _sync_main(tmp_path)
+        assert result.success is True
+
+    def test_checkout_from_feature_branch(self, tmp_path: Path, monkeypatch) -> None:
+        """On feature branch, checkout to main succeeds, then sync."""
+        mock = _mock_subprocess({
+            "branch": _ok("feature-x\n"),
+            "checkout": _ok(),
+            "status": _ok(""),
+            "fetch": _ok(),
+            "pull": _ok(),
+        })
+        monkeypatch.setattr("issue_worker.orchestrator.subprocess.run", mock)
+
+        result = _sync_main(tmp_path)
+        assert result.success is True
+
+    def test_branch_detection_failure_aborts(self, tmp_path: Path, monkeypatch) -> None:
+        """Cannot detect current branch → abort."""
+        mock = _mock_subprocess({
+            "branch": _fail("fatal: not a git repository"),
+        })
+        monkeypatch.setattr("issue_worker.orchestrator.subprocess.run", mock)
+
+        result = _sync_main(tmp_path)
+        assert result.success is False
+        assert "detect current branch" in result.message
+
+    def test_checkout_failure_aborts(self, tmp_path: Path, monkeypatch) -> None:
+        """checkout to main fails → abort."""
+        mock = _mock_subprocess({
+            "branch": _ok("feature-x\n"),
+            "checkout": _fail("error: pathspec 'main' did not match"),
+        })
+        monkeypatch.setattr("issue_worker.orchestrator.subprocess.run", mock)
+
+        result = _sync_main(tmp_path)
+        assert result.success is False
+        assert "checkout main" in result.message
+
+    def test_dirty_repo_stash_restore_success(self, tmp_path: Path, monkeypatch) -> None:
+        """Dirty tree → stash, sync, restore all succeed."""
+        stash_calls = []
+
+        def stash_handler(cmd, **kwargs):
+            stash_calls.append(cmd)
+            return _ok()
+
+        mock = _mock_subprocess({
+            "branch": _ok("main\n"),
+            "status": _ok("M file.txt\n"),
+            "stash": stash_handler,
+            "fetch": _ok(),
+            "pull": _ok(),
+        })
+        monkeypatch.setattr("issue_worker.orchestrator.subprocess.run", mock)
+
+        result = _sync_main(tmp_path)
+        assert result.success is True
+        assert len(stash_calls) == 2  # stash --include-untracked + stash pop
+
+    def test_stash_creation_failure_aborts(self, tmp_path: Path, monkeypatch) -> None:
+        """Stash creation fails → abort, don't try to sync."""
+        mock = _mock_subprocess({
+            "branch": _ok("main\n"),
+            "status": _ok("M file.txt\n"),
+            "stash": _fail("error: could not stash"),
+        })
+        monkeypatch.setattr("issue_worker.orchestrator.subprocess.run", mock)
+
+        result = _sync_main(tmp_path)
+        assert result.success is False
+        assert "stash" in result.message.lower()
+
+    def test_fetch_failure_aborts(self, tmp_path: Path, monkeypatch) -> None:
+        """Fetch fails → abort."""
+        mock = _mock_subprocess({
+            "branch": _ok("main\n"),
+            "status": _ok(""),
+            "fetch": _fail("fatal: unable to access remote"),
+            "pull": _ok(),
+        })
+        monkeypatch.setattr("issue_worker.orchestrator.subprocess.run", mock)
+
+        result = _sync_main(tmp_path)
+        assert result.success is False
+        assert "fetch" in result.message.lower()
+
+    def test_pull_failure_aborts(self, tmp_path: Path, monkeypatch) -> None:
+        """Pull --rebase fails → abort."""
+        mock = _mock_subprocess({
+            "branch": _ok("main\n"),
+            "status": _ok(""),
+            "fetch": _ok(),
+            "pull": _fail("CONFLICT (content): Merge conflict"),
+        })
+        monkeypatch.setattr("issue_worker.orchestrator.subprocess.run", mock)
+
+        result = _sync_main(tmp_path)
+        assert result.success is False
+        assert "pull" in result.message.lower()
+
+    def test_fetch_timeout_aborts(self, tmp_path: Path, monkeypatch) -> None:
+        """Fetch times out → abort."""
+
+        def timeout_fetch(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=30)
+
+        mock = _mock_subprocess({
+            "branch": _ok("main\n"),
+            "status": _ok(""),
+            "fetch": timeout_fetch,
+        })
+        monkeypatch.setattr("issue_worker.orchestrator.subprocess.run", mock)
+
+        result = _sync_main(tmp_path)
+        assert result.success is False
+        assert "timed out" in result.message
+
+    def test_stash_pop_conflict_blocks(self, tmp_path: Path, monkeypatch) -> None:
+        """Stash pop conflict after sync → abort (don't launch agents)."""
+        stash_call_count = [0]
+
+        def stash_handler(cmd, **kwargs):
+            stash_call_count[0] += 1
+            if stash_call_count[0] == 1:
+                return _ok()  # stash --include-untracked succeeds
+            return _fail("CONFLICT (content): Merge conflict in file.txt")  # pop fails
+
+        mock = _mock_subprocess({
+            "branch": _ok("main\n"),
+            "status": _ok("M file.txt\n"),
+            "stash": stash_handler,
+            "fetch": _ok(),
+            "pull": _ok(),
+        })
+        monkeypatch.setattr("issue_worker.orchestrator.subprocess.run", mock)
+
+        result = _sync_main(tmp_path)
+        assert result.success is False
+        assert "stash" in result.message.lower()
+        assert "conflict" in result.message.lower() or "remain" in result.message.lower()
+
+    def test_fetch_failure_restores_stash(self, tmp_path: Path, monkeypatch) -> None:
+        """When fetch fails after stashing, attempt to restore stash."""
+        stash_calls = []
+
+        def stash_handler(cmd, **kwargs):
+            stash_calls.append(cmd)
+            return _ok()
+
+        mock = _mock_subprocess({
+            "branch": _ok("main\n"),
+            "status": _ok("M file.txt\n"),
+            "stash": stash_handler,
+            "fetch": _fail("connection refused"),
+        })
+        monkeypatch.setattr("issue_worker.orchestrator.subprocess.run", mock)
+
+        result = _sync_main(tmp_path)
+        assert result.success is False
+        # Should have called stash twice: once to stash, once to pop (restore)
+        assert len(stash_calls) == 2
