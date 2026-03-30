@@ -43,13 +43,26 @@ class TestShouldConsolidate:
         assert _should_consolidate(11) is False
 
 
-def _make_launcher(calls: list, *, return_value: bool = True, side_effect=None):
-    """Create a fake launcher that records calls."""
+def _make_launcher(
+    calls: list,
+    *,
+    return_value: bool = True,
+    side_effect=None,
+    started_file: Path | None = None,
+    pid: int = 99998,
+):
+    """Create a fake launcher that records calls.
+
+    If started_file is provided, writes a fake PID to it on successful launch
+    (simulating the agent writing $$ to the started file).
+    """
 
     def launcher(cmd: str, title: str) -> bool:
         calls.append((cmd, title))
         if side_effect:
             side_effect()
+        if started_file and return_value:
+            started_file.write_text(f"{pid}\n")
         return return_value
 
     return launcher
@@ -88,6 +101,7 @@ class TestRunConsolidation:
         config = Config(test_mode=True)
         (tmp_path / "SESSION_LOG.md").write_text("\n".join(f"line {i}" for i in range(250)))
         signal_file = tmp_path / "CONSOLIDATION_SIGNAL.txt"
+        started = tmp_path / ".issue-worker-consolidation-started"
 
         def write_signal():
             signal_file.write_text("DONE\n")
@@ -95,7 +109,9 @@ class TestRunConsolidation:
         calls: list = []
         monkeypatch.setattr("issue_worker.orchestrator.time.sleep", lambda _: None)
         result = _run_consolidation(
-            tmp_path, config, _make_launcher(calls, side_effect=write_signal)
+            tmp_path,
+            config,
+            _make_launcher(calls, side_effect=write_signal, started_file=started),
         )
         assert result is True
         assert len(calls) == 1
@@ -113,10 +129,14 @@ class TestRunConsolidation:
     def test_timeout_is_nonfatal(self, tmp_path: Path, monkeypatch) -> None:
         config = Config(test_mode=True)
         (tmp_path / "SESSION_LOG.md").write_text("\n".join(f"line {i}" for i in range(250)))
+        started = tmp_path / ".issue-worker-consolidation-started"
         calls: list = []
 
         monkeypatch.setattr("issue_worker.orchestrator.CONSOLIDATION_TIMEOUT", 0)
-        result = _run_consolidation(tmp_path, config, _make_launcher(calls))
+        monkeypatch.setattr("issue_worker.orchestrator.time.sleep", lambda _: None)
+        result = _run_consolidation(
+            tmp_path, config, _make_launcher(calls, started_file=started)
+        )
         assert result is False
         assert len(calls) == 1  # Launched, but timed out
 
@@ -140,6 +160,7 @@ class TestRunConsolidation:
         config = Config(test_mode=True)
         (tmp_path / "SESSION_LOG.md").write_text("\n".join(f"line {i}" for i in range(250)))
         signal_file = tmp_path / "CONSOLIDATION_SIGNAL.txt"
+        started = tmp_path / ".issue-worker-consolidation-started"
 
         def write_signal():
             signal_file.write_text("DONE\n")
@@ -147,19 +168,154 @@ class TestRunConsolidation:
         calls: list = []
         monkeypatch.setattr("issue_worker.orchestrator.time.sleep", lambda _: None)
         _run_consolidation(
-            tmp_path, config, _make_launcher(calls, side_effect=write_signal)
+            tmp_path,
+            config,
+            _make_launcher(calls, side_effect=write_signal, started_file=started),
         )
         assert not signal_file.exists()
+        assert not started.exists()
 
     def test_only_attempted_once(self, tmp_path: Path, monkeypatch) -> None:
         """Consolidation should launch exactly one agent, not retry on failure."""
         config = Config(test_mode=True)
         (tmp_path / "SESSION_LOG.md").write_text("\n".join(f"line {i}" for i in range(250)))
+        started = tmp_path / ".issue-worker-consolidation-started"
         calls: list = []
 
         monkeypatch.setattr("issue_worker.orchestrator.CONSOLIDATION_TIMEOUT", 0)
-        _run_consolidation(tmp_path, config, _make_launcher(calls))
+        monkeypatch.setattr("issue_worker.orchestrator.time.sleep", lambda _: None)
+        _run_consolidation(
+            tmp_path, config, _make_launcher(calls, started_file=started)
+        )
         assert len(calls) == 1
+
+
+class TestConsolidationSerialization:
+    """Tests for consolidation lifecycle serialization (issue #16)."""
+
+    def test_startup_failure_is_nonfatal(self, tmp_path: Path, monkeypatch) -> None:
+        """If consolidation agent never writes started file, skip without overlap."""
+        config = Config(test_mode=True)
+        (tmp_path / "SESSION_LOG.md").write_text("\n".join(f"line {i}" for i in range(250)))
+        calls: list = []
+
+        # Launcher succeeds but does NOT write started file (simulating startup failure)
+        monkeypatch.setattr("issue_worker.orchestrator.time.sleep", lambda _: None)
+        result = _run_consolidation(tmp_path, config, _make_launcher(calls))
+        assert result is False
+        assert len(calls) == 1  # Launched, but startup not verified
+
+    def test_waits_for_process_exit_after_signal(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """After signal, _wait_for_agent_exit must be called with the consolidation PID."""
+        config = Config(test_mode=True)
+        (tmp_path / "SESSION_LOG.md").write_text("\n".join(f"line {i}" for i in range(250)))
+        signal_file = tmp_path / "CONSOLIDATION_SIGNAL.txt"
+        started = tmp_path / ".issue-worker-consolidation-started"
+        exit_wait_calls: list[tuple] = []
+
+        def write_signal():
+            signal_file.write_text("DONE\n")
+
+        def track_exit_wait(pid, label=""):
+            exit_wait_calls.append((pid, label))
+
+        monkeypatch.setattr("issue_worker.orchestrator.time.sleep", lambda _: None)
+        monkeypatch.setattr(
+            "issue_worker.orchestrator._wait_for_agent_exit", track_exit_wait
+        )
+        calls: list = []
+        result = _run_consolidation(
+            tmp_path,
+            config,
+            _make_launcher(calls, side_effect=write_signal, started_file=started),
+        )
+        assert result is True
+        assert len(exit_wait_calls) == 1
+        assert exit_wait_calls[0] == (99998, "consolidation")
+
+    def test_waits_for_process_exit_on_timeout(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Even on timeout, _wait_for_agent_exit must be called before returning."""
+        config = Config(test_mode=True)
+        (tmp_path / "SESSION_LOG.md").write_text("\n".join(f"line {i}" for i in range(250)))
+        started = tmp_path / ".issue-worker-consolidation-started"
+        exit_wait_calls: list[tuple] = []
+
+        def track_exit_wait(pid, label=""):
+            exit_wait_calls.append((pid, label))
+
+        monkeypatch.setattr("issue_worker.orchestrator.CONSOLIDATION_TIMEOUT", 0)
+        monkeypatch.setattr("issue_worker.orchestrator.time.sleep", lambda _: None)
+        monkeypatch.setattr(
+            "issue_worker.orchestrator._wait_for_agent_exit", track_exit_wait
+        )
+        calls: list = []
+        result = _run_consolidation(
+            tmp_path, config, _make_launcher(calls, started_file=started)
+        )
+        assert result is False
+        assert len(exit_wait_calls) == 1
+        assert exit_wait_calls[0] == (99998, "consolidation")
+
+    def test_started_file_cleaned_up_on_success(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Started file must be removed after consolidation completes."""
+        config = Config(test_mode=True)
+        (tmp_path / "SESSION_LOG.md").write_text("\n".join(f"line {i}" for i in range(250)))
+        signal_file = tmp_path / "CONSOLIDATION_SIGNAL.txt"
+        started = tmp_path / ".issue-worker-consolidation-started"
+
+        def write_signal():
+            signal_file.write_text("DONE\n")
+
+        calls: list = []
+        monkeypatch.setattr("issue_worker.orchestrator.time.sleep", lambda _: None)
+        _run_consolidation(
+            tmp_path,
+            config,
+            _make_launcher(calls, side_effect=write_signal, started_file=started),
+        )
+        assert not started.exists()
+
+    def test_started_file_cleaned_up_on_timeout(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Started file must be removed even after timeout."""
+        config = Config(test_mode=True)
+        (tmp_path / "SESSION_LOG.md").write_text("\n".join(f"line {i}" for i in range(250)))
+        started = tmp_path / ".issue-worker-consolidation-started"
+        calls: list = []
+
+        monkeypatch.setattr("issue_worker.orchestrator.CONSOLIDATION_TIMEOUT", 0)
+        monkeypatch.setattr("issue_worker.orchestrator.time.sleep", lambda _: None)
+        _run_consolidation(
+            tmp_path, config, _make_launcher(calls, started_file=started)
+        )
+        assert not started.exists()
+
+    def test_launch_failure_no_exit_wait(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """If launcher fails, no PID exists — _wait_for_agent_exit should not be called."""
+        config = Config(test_mode=True)
+        (tmp_path / "SESSION_LOG.md").write_text("\n".join(f"line {i}" for i in range(250)))
+        exit_wait_calls: list[tuple] = []
+
+        def track_exit_wait(pid, label=""):
+            exit_wait_calls.append((pid, label))
+
+        monkeypatch.setattr(
+            "issue_worker.orchestrator._wait_for_agent_exit", track_exit_wait
+        )
+        calls: list = []
+        _run_consolidation(
+            tmp_path, config, _make_launcher(calls, return_value=False)
+        )
+        assert exit_wait_calls == []
 
 
 class TestWaitForAgentExit:
@@ -1119,3 +1275,58 @@ class TestStuckAgentRetry:
 
         assert result.final_status == "max_iterations"
         assert len(launch_calls) == 1
+
+
+class TestConsolidationRunIntegration:
+    """Tests that consolidation serializes with the main worker in run()."""
+
+    def test_consolidation_completes_before_worker_launches(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The main worker must not launch until consolidation has fully exited."""
+        launch_order: list[str] = []
+
+        # Setup: enable consolidation, mock dependencies
+        launch_calls, config = _setup_run(
+            monkeypatch, tmp_path,
+            signal=Signal(status="COMPLETE", summary="done"),
+        )
+        # Re-enable consolidation for this test
+        monkeypatch.setattr(
+            "issue_worker.orchestrator._should_consolidate", lambda _: True
+        )
+
+        # _run_consolidation will be called — track it and record ordering
+        def fake_consolidation(project_path, cfg, launcher_fn):
+            launch_order.append("consolidation_start")
+            launch_order.append("consolidation_end")
+            return True
+
+        monkeypatch.setattr(
+            "issue_worker.orchestrator._run_consolidation", fake_consolidation
+        )
+
+        # Wrap the existing launcher to record order
+        started_file = tmp_path / ".issue-worker-started"
+
+        def ordering_launcher(cmd: str, title: str) -> bool:
+            launch_order.append("worker_launch")
+            launch_calls.append((cmd, title))
+            started_file.write_text("99999\n")
+            return True
+
+        monkeypatch.setattr(
+            "issue_worker.orchestrator.terminal.open_terminal_tab_test",
+            ordering_launcher,
+        )
+        monkeypatch.setattr(
+            "issue_worker.orchestrator.terminal.open_terminal_tab",
+            ordering_launcher,
+        )
+
+        result = _run_with(tmp_path, config, max_iterations=1)
+
+        assert result.final_status == "complete"
+        # Consolidation must appear before worker launch
+        assert launch_order.index("consolidation_start") < launch_order.index("worker_launch")
+        assert launch_order.index("consolidation_end") < launch_order.index("worker_launch")

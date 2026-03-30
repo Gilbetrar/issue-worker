@@ -425,6 +425,11 @@ def _run_consolidation(
     Launches a separate agent to distill SESSION_LOG.md into LEARNINGS.md.
     Non-fatal: logs warnings on failure but never raises.
 
+    Serialized with the same rigor as normal worker launches:
+    - PID tracked via started file
+    - Startup verified before waiting for signal
+    - Process exit confirmed after signal received
+
     Returns True if consolidation completed, False if skipped or failed.
     """
     log = get_logger()
@@ -446,7 +451,9 @@ def _run_consolidation(
     log.info("SESSION_LOG.md is %d lines — running consolidation...", line_count)
 
     consolidation_signal = project_path / "CONSOLIDATION_SIGNAL.txt"
+    consolidation_started = project_path / ".issue-worker-consolidation-started"
     consolidation_signal.unlink(missing_ok=True)
+    consolidation_started.unlink(missing_ok=True)
 
     prompt_file = Path(tempfile.mktemp(prefix="iw-consolidate-", suffix=".md"))
     try:
@@ -459,14 +466,14 @@ def _run_consolidation(
 
     if config.test_mode:
         tab_cmd = (
-            f"cd '{project_path}' && "
+            f"cd '{project_path}' && echo $$ > '{consolidation_started}' && "
             f"echo 'TEST: consolidation running...' && sleep 2 && "
             f"printf 'DONE\\n' > '{consolidation_signal}.tmp' && "
             f"mv '{consolidation_signal}.tmp' '{consolidation_signal}'"
         )
     else:
         tab_cmd = (
-            f"cd '{project_path}' && "
+            f"cd '{project_path}' && echo $$ > '{consolidation_started}' && "
             f"claude --settings '{config.settings_file}' --mcp-config '{config.mcp_config}' "
             f"--dangerously-skip-permissions < '{prompt_file}' ; "
             f"rm -f '{prompt_file}'"
@@ -477,23 +484,42 @@ def _run_consolidation(
         prompt_file.unlink(missing_ok=True)
         return False
 
+    # Verify consolidation agent started (same gate as normal workers)
+    if not _wait_for_file(consolidation_started, timeout=15, interval=1):
+        log.warning("Consolidation agent never started — skipping.")
+        prompt_file.unlink(missing_ok=True)
+        return False
+
+    pid_str = consolidation_started.read_text().strip()
+    pid = int(pid_str) if pid_str.isdigit() else None
+    log.info("Consolidation agent started (PID: %s)", pid or "unknown")
+
     log.info("Waiting for consolidation (timeout %ds)...", CONSOLIDATION_TIMEOUT)
     elapsed = 0.0
+    completed = False
     while elapsed < CONSOLIDATION_TIMEOUT:
         if consolidation_signal.exists():
             content = consolidation_signal.read_text().strip()
             if content:
-                log.info("Consolidation complete.")
-                consolidation_signal.unlink(missing_ok=True)
-                prompt_file.unlink(missing_ok=True)
-                return True
+                completed = True
+                break
         time.sleep(5)
         elapsed += 5
 
-    log.warning("Consolidation timed out after %ds — continuing.", CONSOLIDATION_TIMEOUT)
+    if not completed:
+        log.warning("Consolidation timed out after %ds.", CONSOLIDATION_TIMEOUT)
+
+    # Block until consolidation process exits — never overlap with the main worker
+    _wait_for_agent_exit(pid, "consolidation")
+
+    # Clean up
     consolidation_signal.unlink(missing_ok=True)
+    consolidation_started.unlink(missing_ok=True)
     prompt_file.unlink(missing_ok=True)
-    return False
+
+    if completed:
+        log.info("Consolidation complete.")
+    return completed
 
 
 def _sync_main(project_path: Path) -> SyncResult:

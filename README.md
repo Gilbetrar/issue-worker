@@ -72,6 +72,8 @@ Crash detection is signal-based. An agent fails if it exits without writing a si
 
 The orchestrator tracks the PID of each agent and waits up to 30 seconds for the previous process to exit before launching the next one. If the process is still alive after that (typically orphaned MCP servers lingering after Claude finishes), the orchestrator detaches and proceeds — it does not kill the process.
 
+Both consolidation and normal worker agents use the same lifecycle controls: PID tracking via started files, startup verification, and process-exit gating. Consolidation must fully exit before the main worker launches — the orchestrator never allows overlapping Claude sessions.
+
 ## Signals and Handoff
 
 Agents communicate with the orchestrator by writing `SIGNAL.txt` in the project root:

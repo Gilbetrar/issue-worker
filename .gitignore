@@ -1,3 +1,7 @@
+# Issue worker runtime files
+.issue-worker-started
+.issue-worker-consolidation-started
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
