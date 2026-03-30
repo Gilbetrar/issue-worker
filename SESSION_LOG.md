@@ -298,3 +298,29 @@ Raw session history. Agents: append here, read LEARNINGS.md instead.
 
 **Mistakes made:**
 - First test run: `test_preexisting_handoff_never_deleted_by_orchestrator` failed because the sleep mock's unlink call ran during post-signal sleep (line 270) after the file was already gone. Fixed by scoping the file-existence check to the first N sleep calls
+
+---
+
+## Agent Session - Issue #15
+
+**Worked on:** Issue #15 - Retry the same iteration after killing a stuck agent
+
+**What I did:**
+- Removed `iteration += 1` from the stuck-agent kill path in orchestrator.py (line 351)
+- Updated log message to say "Retrying iteration N..." instead of "Resuming orchestration..."
+- Added `TestStuckAgentRetry` test class with 4 tests:
+  - `test_kill_retries_same_iteration` — verifies kill path retries, not skips
+  - `test_kill_does_not_consume_iteration_budget` — alternating stuck/success proves budget accounting
+  - `test_leave_does_not_advance_iteration` — leave path also retries
+  - `test_kill_prevents_duplicate_agents` — _wait_for_agent_exit called before retry launch
+
+**What I learned:**
+- The "leave" path already correctly retried without incrementing (had `continue` without `iteration += 1`)
+- Testing stuck-agent flows requires careful coordination of `_is_process_alive` mock state across multiple checks (timeout block + PAUSED block)
+
+**Codebase facts discovered:**
+- `_is_process_alive` is called in two places for stuck agents: once in the timeout block (line 251) and once in the PAUSED handler (line 334)
+- `prev_pid` is set to `None` after kill but preserved after "leave" (leave path uses `_wait_for_agent_exit` instead)
+
+**Mistakes made:**
+- None — clean implementation on first attempt
