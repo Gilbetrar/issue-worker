@@ -153,3 +153,25 @@ Raw session history. Agents: append here, read LEARNINGS.md instead.
 
 **Mistakes made:**
 - Initial test expected 3 sleep calls but `_wait_for_agent_exit` calls `_is_process_alive` in guard clause too (consumed 1 of 3 alive counts) — fixed to expect 2
+
+---
+
+## Agent Session - Issue #9
+
+**Worked on:** Issue #9 - Make repo sync safe before launching agents
+
+**What I did:**
+- Added `SyncResult` dataclass (success: bool, message: str) returned by `_sync_main()`
+- Refactored `_sync_main()` to check return codes of all git commands (branch detection, checkout, stash, fetch, pull, stash pop)
+- Added `_try_restore_stash()` helper — best-effort stash restore on sync failure paths
+- Updated `run()` to abort with `RunResult(final_status="error")` when sync fails
+- Added 11 tests covering: clean repo, branch checkout, all failure paths (branch detection, checkout, stash, fetch, pull, timeout, stash pop conflict), and stash restore on failure
+
+**What I learned:**
+- There were stale duplicate `SyncResult` class definitions already in orchestrator.py from prior incomplete work — had to clean those up
+- The `_mock_subprocess` helper pattern (dispatch based on git subcommand) works well for testing git command sequences
+- Using callable handlers in the mock dispatch allows stateful tests (e.g., stash succeeds first call, fails on pop)
+
+**Codebase facts discovered:**
+- Test count went from 64 to 75 with the 11 new sync tests
+- The `Closes #N` keyword in commit messages auto-closes GitHub issues on push

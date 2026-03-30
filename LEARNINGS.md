@@ -14,7 +14,7 @@ Distilled patterns for future agents. Keep under 100 lines.
 
 ```bash
 uv run ruff check src/ tests/   # Lint (src + tests)
-uv run pytest tests/ -v         # Tests (59 tests across 6 files)
+uv run pytest tests/ -v         # Tests (75 tests across 6 files)
 uv add --dev <package>          # Add dev dependency
 ```
 
@@ -51,6 +51,13 @@ Agents can write these to SIGNAL.txt:
 - `_wait_for_agent_exit(prev_pid)` blocks before every `launcher()` call
 - The PAUSED "leave" path blocks until the stuck agent exits (never advances)
 - Dialog default is "Kill & Resume" (safer than "Leave Running")
+
+## Repo Sync
+
+- `_sync_main()` returns `SyncResult(success, message)` — orchestrator aborts if `success` is False
+- All git commands check return codes; failures are surfaced, not ignored
+- If changes were stashed and sync fails, `_try_restore_stash()` attempts best-effort restore
+- Tests mock `subprocess.run` via `_mock_subprocess()` helper that dispatches by git subcommand
 
 ## Key Gotchas
 
