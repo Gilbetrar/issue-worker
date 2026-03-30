@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from issue_worker.orchestrator import (
+    AGENT_EXIT_GRACE_PERIOD,
     CONSOLIDATION_LINE_THRESHOLD,
     Config,
     RunResult,
@@ -194,6 +195,23 @@ class TestWaitForAgentExit:
         )
         _wait_for_agent_exit(12345, "test")
         assert len(sleep_calls) == 2
+        assert all(s == 5 for s in sleep_calls)
+
+    def test_detaches_after_grace_period(self, monkeypatch) -> None:
+        """Process stays alive forever — function returns after grace period."""
+        sleep_calls: list[float] = []
+
+        monkeypatch.setattr(
+            "issue_worker.orchestrator._is_process_alive", lambda pid: True
+        )
+        monkeypatch.setattr(
+            "issue_worker.orchestrator.time.sleep",
+            lambda s: sleep_calls.append(s),
+        )
+        _wait_for_agent_exit(12345, "lingering")
+        # Should have polled every 5s for AGENT_EXIT_GRACE_PERIOD seconds
+        expected_polls = int(AGENT_EXIT_GRACE_PERIOD / 5)
+        assert len(sleep_calls) == expected_polls
         assert all(s == 5 for s in sleep_calls)
 
 
@@ -747,3 +765,157 @@ class TestRunLoop:
 
         assert result.final_status == "complete"
         assert "no actionable" in result.message.lower()
+
+
+# ── Pre-existing handoff (restart-safety, issue #14) ─────────────
+
+
+class TestPreExistingHandoff:
+    """Tests for restart-safe handoff behavior."""
+
+    def test_preexisting_handoff_blocks_until_resolved(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """HANDOFF.md at startup blocks agent launch until the file is deleted."""
+        handoff = tmp_path / "HANDOFF.md"
+        handoff.write_text("# Action needed\nDo the thing\n")
+
+        launch_calls, config = _setup_run(
+            monkeypatch, tmp_path,
+            signal=Signal(status="WORKING", summary="did work"),
+        )
+
+        sleep_count = [0]
+
+        def sleep_and_delete(_: float) -> None:
+            sleep_count[0] += 1
+            if sleep_count[0] >= 3:
+                handoff.unlink(missing_ok=True)
+
+        monkeypatch.setattr("issue_worker.orchestrator.time.sleep", sleep_and_delete)
+
+        result = _run_with(tmp_path, config, max_iterations=1)
+
+        assert sleep_count[0] >= 3
+        assert len(launch_calls) == 1
+        assert result.final_status == "max_iterations"
+
+    def test_preexisting_handoff_never_deleted_by_orchestrator(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The orchestrator must not delete HANDOFF.md — only the operator can."""
+        handoff = tmp_path / "HANDOFF.md"
+        handoff.write_text("# Action needed\n")
+
+        launch_calls, config = _setup_run(
+            monkeypatch, tmp_path,
+            signal=Signal(status="WORKING", summary="did work"),
+        )
+
+        file_existed_every_check = [True]
+        sleep_count = [0]
+
+        def sleep_and_verify(_: float) -> None:
+            sleep_count[0] += 1
+            # Only verify during the pre-loop handoff wait (first 5 calls)
+            if sleep_count[0] <= 5 and not handoff.exists():
+                file_existed_every_check[0] = False
+            if sleep_count[0] == 5:
+                handoff.unlink()
+
+        monkeypatch.setattr("issue_worker.orchestrator.time.sleep", sleep_and_verify)
+
+        _run_with(tmp_path, config, max_iterations=1)
+
+        assert file_existed_every_check[0] is True
+        assert sleep_count[0] >= 5
+
+    def test_no_preexisting_handoff_proceeds_normally(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Without HANDOFF.md at startup, run() proceeds without blocking."""
+        launch_calls, config = _setup_run(
+            monkeypatch, tmp_path,
+            signal=Signal(status="COMPLETE", summary="done"),
+        )
+
+        result = _run_with(tmp_path, config, max_iterations=5)
+
+        assert result.final_status == "complete"
+        assert len(launch_calls) == 1
+
+    def test_preexisting_handoff_sends_notification(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Operator should be notified when a pre-existing handoff blocks startup."""
+        handoff = tmp_path / "HANDOFF.md"
+        handoff.write_text("# Blocked\n")
+
+        _calls, config = _setup_run(
+            monkeypatch, tmp_path,
+            signal=Signal(status="WORKING", summary="work"),
+        )
+
+        notify_calls: list[tuple] = []
+        monkeypatch.setattr(
+            "issue_worker.orchestrator.notifications.notify",
+            lambda *a, **kw: notify_calls.append(a),
+        )
+
+        sleep_count = [0]
+
+        def sleep_and_delete(_: float) -> None:
+            sleep_count[0] += 1
+            if sleep_count[0] >= 2:
+                handoff.unlink(missing_ok=True)
+
+        monkeypatch.setattr("issue_worker.orchestrator.time.sleep", sleep_and_delete)
+
+        _run_with(tmp_path, config, max_iterations=1)
+
+        assert any("BLOCKED" in str(call) for call in notify_calls)
+
+    def test_resolved_handoff_allows_normal_launch(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """After HANDOFF.md is resolved, the full run loop executes normally."""
+        handoff = tmp_path / "HANDOFF.md"
+        handoff.write_text("# Will be resolved\n")
+
+        launch_calls, config = _setup_run(
+            monkeypatch, tmp_path,
+            signal=Signal(status="WORKING", summary="work"),
+        )
+
+        sleep_count = [0]
+
+        def sleep_and_delete(_: float) -> None:
+            sleep_count[0] += 1
+            if sleep_count[0] == 1:
+                handoff.unlink()
+
+        monkeypatch.setattr("issue_worker.orchestrator.time.sleep", sleep_and_delete)
+
+        result = _run_with(tmp_path, config, max_iterations=3)
+
+        assert result.final_status == "max_iterations"
+        assert result.iterations_completed == 3
+        assert len(launch_calls) == 3
+
+    def test_same_run_cleanup_still_clears_transient_files(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Per-iteration clean-slate still removes SIGNAL.txt and started file."""
+        launch_calls, config = _setup_run(
+            monkeypatch, tmp_path,
+            signal=Signal(status="WORKING", summary="work"),
+        )
+
+        # Pre-create transient files
+        (tmp_path / "SIGNAL.txt").write_text("STALE\n")
+        (tmp_path / ".issue-worker-started").write_text("12345\n")
+
+        result = _run_with(tmp_path, config, max_iterations=1)
+
+        assert result.final_status == "max_iterations"
+        assert len(launch_calls) == 1

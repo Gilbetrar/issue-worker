@@ -15,6 +15,7 @@ from .logging import setup_logging, prune_logs, get_logger
 
 CONSOLIDATION_TIMEOUT = 300  # 5 minutes
 CONSOLIDATION_LINE_THRESHOLD = 200
+AGENT_EXIT_GRACE_PERIOD = 30  # seconds to wait before detaching from a finished agent
 
 
 @dataclass
@@ -107,6 +108,29 @@ def run(
             final_status="error",
             message=f"Repository sync failed: {sync_result.message}",
         )
+
+    # Check for unresolved handoff from a previous run
+    handoff_file = project_path / "HANDOFF.md"
+    if handoff_file.exists():
+        log.info("")
+        log.info("╔══════════════════════════════════════════════════════════╗")
+        log.info("║  BLOCKED — Unresolved handoff from a previous run      ║")
+        log.info("╚══════════════════════════════════════════════════════════╝")
+        log.info("")
+        log.info("  HANDOFF.md exists at: %s", handoff_file)
+        log.info("  This file contains instructions from a prior paused agent.")
+        log.info("")
+        log.info("  To resolve:")
+        log.info("    1. Read HANDOFF.md and complete the requested action")
+        log.info("    2. Delete HANDOFF.md when done")
+        log.info("  Or to skip: rm %s", handoff_file)
+        log.info("")
+        notifications.notify("BLOCKED", "Issue worker: unresolved handoff from prior run")
+        log.info("  Waiting for HANDOFF.md to be resolved (deleted)...")
+        while handoff_file.exists():
+            time.sleep(5)
+        log.info("  HANDOFF.md resolved. Proceeding with launch...")
+        log.info("")
 
     crash_count = 0
     iteration = 1
@@ -663,19 +687,38 @@ def _kill_agent(pid: int) -> None:
 
 
 def _wait_for_agent_exit(pid: int | None, label: str = "") -> None:
-    """Block until the given agent process is no longer alive.
+    """Wait for the given agent process to exit, with a timeout.
 
     This is the primary guard against duplicate concurrent agents.
     Called before every launcher() invocation.
+
+    Waits up to AGENT_EXIT_GRACE_PERIOD seconds for a natural exit.
+    If the process is still alive after that, logs a warning and
+    detaches (returns without killing).  This is safe because this
+    function is only called after the previous agent's signal has
+    already been written and processed — the work is done, the
+    lingering process is just orphaned MCP servers.
     """
     if pid is None or not _is_process_alive(pid):
         return
     log = get_logger()
     suffix = f" ({label})" if label else ""
-    log.info("  Previous agent (PID %d) still alive%s. Waiting for it to exit...", pid, suffix)
-    while _is_process_alive(pid):
+    log.info("  Previous agent (PID %d) still alive%s. Waiting for exit...", pid, suffix)
+
+    elapsed = 0.0
+    while elapsed < AGENT_EXIT_GRACE_PERIOD:
+        if not _is_process_alive(pid):
+            log.info("  Previous agent exited.")
+            return
         time.sleep(5)
-    log.info("  Previous agent exited.")
+        elapsed += 5
+
+    log.warning(
+        "  Agent PID %d did not exit after %ds — likely lingering MCP servers. "
+        "Detaching and proceeding to next iteration.",
+        pid,
+        AGENT_EXIT_GRACE_PERIOD,
+    )
 
 
 def _defaults_dir() -> Path:
