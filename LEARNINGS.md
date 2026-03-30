@@ -38,8 +38,22 @@ uv add --dev <package>          # Add dev dependency
 - Log rotation: keeps last 20 files via `prune_logs()`
 - `issue-worker logs` subcommand to view recent logs
 
+## Signal Statuses
+
+Agents can write these to SIGNAL.txt:
+- `WORKING` — completed work, spawn next iteration
+- `PAUSED` — needs human intervention (write HANDOFF.md too)
+- `COMPLETE` — all issues done, stop the loop
+- `NO_WORK` — nothing actionable found (not a crash, stops the loop)
+
+## Concurrency Protection
+
+- `_wait_for_agent_exit(prev_pid)` blocks before every `launcher()` call
+- The PAUSED "leave" path blocks until the stuck agent exits (never advances)
+- Dialog default is "Kill & Resume" (safer than "Leave Running")
+
 ## Key Gotchas
 
 - `terminal.py` has a pre-existing ruff E402 (import not at top) — don't fix unless asked
-- Original project files were untracked in initial commit — all now committed
 - The `_banner()` and `_sync_main()` helper functions get their own logger via `get_logger()`
+- CLI tests must mock `Path.home()` for CI portability (runner doesn't have ~/AI/Projects/)

@@ -125,3 +125,31 @@ Raw session history. Agents: append here, read LEARNINGS.md instead.
 **What I learned:**
 - Issues #3 (profiles), #4 (init), #6 (tmux) were cut by the user — not missing implementations
 - All issue-worker work is done for now
+
+---
+
+## Agent Session - Issue #8
+
+**Worked on:** Issue #8 - Enforce single-agent execution — prevent duplicate concurrent agents
+
+**What I did:**
+- Implemented all 4 sub-fixes (A-D) from the issue:
+  - A: Added `_wait_for_agent_exit()` gate before every `launcher()` call, tracked `prev_pid` across iterations
+  - B: Fixed PAUSED "leave" path to block until stuck agent exits (was advancing and spawning duplicates)
+  - C: Added `NO_WORK` signal status — agents can signal "nothing to do" without triggering crash detection
+  - D: Changed stuck-agent dialog default from "Leave Running" to "Kill & Resume"
+- Added 4 tests for `_wait_for_agent_exit` function
+- Fixed pre-existing CI failure: `test_complete_result_exits_zero` didn't mock the project path, failing on GitHub runners
+
+**What I learned:**
+- `_is_process_alive` is called both in the guard clause and the while loop — test counts must account for both
+- The `Closes #N` syntax in commit messages auto-closes GitHub issues on push
+- CLI tests that reference filesystem paths need Path.home() mocked for CI portability
+
+**Codebase facts discovered:**
+- `prev_pid` tracking was completely absent — no mechanism to prevent duplicate agents
+- The PAUSED "leave" path fell through to `iteration += 1; continue`, spawning duplicates
+- Signal statuses are just strings (no enum) — adding new ones requires updating the comment, orchestrator dispatch, and prompt template
+
+**Mistakes made:**
+- Initial test expected 3 sleep calls but `_wait_for_agent_exit` calls `_is_process_alive` in guard clause too (consumed 1 of 3 alive counts) — fixed to expect 2
