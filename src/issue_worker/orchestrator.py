@@ -347,9 +347,8 @@ def run(
                     prev_pid = None
                     started_file.unlink(missing_ok=True)
                     time.sleep(2)
-                    log.info("  Agent killed. Resuming orchestration...")
-                    iteration += 1
-                    continue
+                    log.info("  Agent killed. Retrying iteration %d...", iteration)
+                    continue  # Retry same iteration — interrupted work shouldn't consume budget
                 else:
                     # Block until agent exits — never advance with a live agent
                     log.info("  Leaving agent running. Waiting for it to exit...")

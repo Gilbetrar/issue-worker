@@ -902,6 +902,206 @@ class TestPreExistingHandoff:
         assert result.iterations_completed == 3
         assert len(launch_calls) == 3
 
+# ── Stuck-agent retry behavior (issue #15) ─────────────────────
+
+
+class TestStuckAgentRetry:
+    """Tests for stuck-agent kill/leave iteration accounting."""
+
+    def test_kill_retries_same_iteration(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Killing a stuck agent should retry the same iteration, not skip it."""
+        launch_calls, config = _setup_run(
+            monkeypatch, tmp_path,
+            signal=Signal(status="WORKING", summary="did work"),
+        )
+
+        # First iteration: agent appears stuck (alive after signal timeout),
+        # user chooses "kill". Second iteration: normal WORKING signal.
+        iteration_signals = iter([None, Signal(status="WORKING", summary="ok")])
+
+        monkeypatch.setattr(
+            "issue_worker.orchestrator.signals.wait_for_signal",
+            lambda path, timeout: next(iteration_signals),
+        )
+
+        # Agent is alive on first call (stuck), dead after that
+        alive_calls = [0]
+
+        def fake_alive(pid: int) -> bool:
+            alive_calls[0] += 1
+            # First two alive checks: stuck agent (one in timeout block, one in PAUSED block)
+            return alive_calls[0] <= 2
+
+        monkeypatch.setattr("issue_worker.orchestrator._is_process_alive", fake_alive)
+
+        kill_calls: list[int] = []
+        monkeypatch.setattr(
+            "issue_worker.orchestrator._kill_agent",
+            lambda pid: kill_calls.append(pid),
+        )
+        monkeypatch.setattr(
+            "issue_worker.orchestrator.notifications.prompt_stuck_action",
+            lambda *a, **kw: "kill",
+        )
+
+        result = _run_with(tmp_path, config, max_iterations=1)
+
+        # Kill was called
+        assert len(kill_calls) == 1
+        # The retry succeeded (WORKING on second attempt) → iteration completed
+        assert result.final_status == "max_iterations"
+        assert result.iterations_completed == 1
+        # Launched twice: once for the stuck attempt, once for the retry
+        assert len(launch_calls) == 2
+
+    def test_kill_does_not_consume_iteration_budget(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Interrupted attempts should not count toward max_iterations."""
+        launch_calls, config = _setup_run(
+            monkeypatch, tmp_path,
+            signal=Signal(status="WORKING", summary="work"),
+        )
+
+        # Every odd launch is stuck (killed), every even launch works.
+        # With max_iterations=2, we need 2 successful completions.
+        call_count = [0]
+
+        def alternating_signal(path, timeout):
+            call_count[0] += 1
+            if call_count[0] % 2 == 1:
+                return None  # stuck → triggers kill
+            return Signal(status="WORKING", summary="completed")
+
+        monkeypatch.setattr(
+            "issue_worker.orchestrator.signals.wait_for_signal",
+            alternating_signal,
+        )
+
+        alive_tracker = [0]
+
+        def alive_for_odd_calls(pid: int) -> bool:
+            alive_tracker[0] += 1
+            # Alive during odd signal waits (stuck), dead during even
+            return call_count[0] % 2 == 1
+
+        monkeypatch.setattr("issue_worker.orchestrator._is_process_alive", alive_for_odd_calls)
+        monkeypatch.setattr(
+            "issue_worker.orchestrator._kill_agent", lambda pid: None,
+        )
+        monkeypatch.setattr(
+            "issue_worker.orchestrator.notifications.prompt_stuck_action",
+            lambda *a, **kw: "kill",
+        )
+
+        result = _run_with(tmp_path, config, max_iterations=2)
+
+        # 2 completed iterations (WORKING), 2 interrupted (killed) = 4 launches
+        assert result.final_status == "max_iterations"
+        assert result.iterations_completed == 2
+        assert len(launch_calls) == 4
+
+    def test_leave_does_not_advance_iteration(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Leaving a stuck agent running should retry the same iteration after it exits."""
+        launch_calls, config = _setup_run(
+            monkeypatch, tmp_path,
+            signal=Signal(status="WORKING", summary="work"),
+        )
+
+        # First call: stuck (None signal). Second: normal WORKING.
+        signal_iter = iter([None, Signal(status="WORKING", summary="done")])
+
+        monkeypatch.setattr(
+            "issue_worker.orchestrator.signals.wait_for_signal",
+            lambda path, timeout: next(signal_iter),
+        )
+
+        alive_calls = [0]
+
+        def fake_alive(pid: int) -> bool:
+            alive_calls[0] += 1
+            # Alive for first 2 checks (stuck detection), then dead
+            return alive_calls[0] <= 2
+
+        monkeypatch.setattr("issue_worker.orchestrator._is_process_alive", fake_alive)
+        monkeypatch.setattr(
+            "issue_worker.orchestrator.notifications.prompt_stuck_action",
+            lambda *a, **kw: "leave",
+        )
+
+        # _wait_for_agent_exit will be called for "leave" path — make it return immediately
+        wait_calls: list[tuple] = []
+
+        def tracking_wait(pid, label=""):
+            wait_calls.append((pid, label))
+
+        monkeypatch.setattr(
+            "issue_worker.orchestrator._wait_for_agent_exit",
+            tracking_wait,
+        )
+
+        result = _run_with(tmp_path, config, max_iterations=1)
+
+        # Leave path also retries same iteration
+        assert result.final_status == "max_iterations"
+        assert result.iterations_completed == 1
+        assert len(launch_calls) == 2  # stuck + retry
+        # The "leave" path called _wait_for_agent_exit with "stuck agent" label
+        assert any("stuck agent" in str(call) for call in wait_calls)
+
+    def test_kill_prevents_duplicate_agents(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """After kill, _wait_for_agent_exit is called before the retry launch."""
+        launch_calls, config = _setup_run(
+            monkeypatch, tmp_path,
+            signal=Signal(status="WORKING", summary="work"),
+        )
+
+        # First: stuck, second: COMPLETE
+        signal_iter = iter([None, Signal(status="COMPLETE", summary="done")])
+        monkeypatch.setattr(
+            "issue_worker.orchestrator.signals.wait_for_signal",
+            lambda path, timeout: next(signal_iter),
+        )
+
+        alive_calls = [0]
+
+        def fake_alive(pid: int) -> bool:
+            alive_calls[0] += 1
+            return alive_calls[0] <= 2
+
+        monkeypatch.setattr("issue_worker.orchestrator._is_process_alive", fake_alive)
+        monkeypatch.setattr("issue_worker.orchestrator._kill_agent", lambda pid: None)
+        monkeypatch.setattr(
+            "issue_worker.orchestrator.notifications.prompt_stuck_action",
+            lambda *a, **kw: "kill",
+        )
+
+        wait_calls: list[tuple] = []
+
+        def tracking_wait(pid, label=""):
+            wait_calls.append((pid, label))
+
+        monkeypatch.setattr(
+            "issue_worker.orchestrator._wait_for_agent_exit",
+            tracking_wait,
+        )
+
+        result = _run_with(tmp_path, config, max_iterations=5)
+
+        assert result.final_status == "complete"
+        # _wait_for_agent_exit called before retry launch (prev_pid=None after kill)
+        # and before initial launch
+        assert len(launch_calls) == 2
+        # prev_pid is set to None after kill, so the retry's wait gets None
+        assert wait_calls[1] == (None, "previous iteration")
+
+
     def test_same_run_cleanup_still_clears_transient_files(
         self, tmp_path: Path, monkeypatch
     ) -> None:
