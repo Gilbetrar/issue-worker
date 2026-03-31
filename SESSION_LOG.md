@@ -370,3 +370,28 @@ Raw session history. Agents: append here, read LEARNINGS.md instead.
 
 **Mistakes made:**
 - First attempt to close issue failed because wrong GitHub account was active (GH_TOKEN override)
+
+---
+
+## Agent Session - Issue #18
+
+**Worked on:** Issue #18 - Make worker prompt instructions repo-appropriate and workflow-consistent
+
+**What I did:**
+- Added `detect_verify_commands()` to `prompts.py` — detects project type via `pyproject.toml` (Python) or `package.json` (Node) and returns appropriate verification commands
+- Replaced hardcoded `npm run typecheck/lint/test/build` in `templates/prompt.md` with `{VERIFY_COMMANDS}` placeholder
+- Reconciled PR guidance with direct-to-main model — PR creation is now described as exceptional, not the normal completion path
+- Added `TestDetectVerifyCommands` (4 tests) and `TestPromptBehavioralContract` (5 tests) to `test_prompts.py`
+- Also closed parent meta issue #17 since all 4 child issues (#9, #14, #16, #18) are now complete
+
+**What I learned:**
+- The prompt template uses simple `{VARIABLE}` substitution, not Jinja or similar
+- `render_prompt` is called from `orchestrator.py:157` with the project path available, making runtime detection straightforward
+- The `Closes #N` syntax in commit messages auto-closes GitHub issues on push
+
+**Codebase facts discovered:**
+- CI runs `uv run ruff check src/ tests/` and `uv run pytest tests/ -v` — these are the actual verification commands
+- The `defaults/` directory contains `settings.json` and `mcp.json`, not project config
+
+**Mistakes made:**
+- None this session
