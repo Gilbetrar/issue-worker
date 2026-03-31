@@ -6,6 +6,36 @@ from importlib import resources
 from pathlib import Path
 
 
+_PYTHON_VERIFY = """\
+   ```bash
+   uv run ruff check src/ tests/   # Lint
+   uv run pytest tests/ -v          # Tests
+   ```"""
+
+_NODE_VERIFY = """\
+   ```bash
+   npm run typecheck
+   npm run lint
+   npm test
+   npm run build
+   ```"""
+
+_GENERIC_VERIFY = """\
+   ```bash
+   # Check LEARNINGS.md or the repo's CI config for the correct commands
+   ```"""
+
+
+def detect_verify_commands(project_path: str) -> str:
+    """Return verification command block appropriate for the project type."""
+    p = Path(project_path)
+    if (p / "pyproject.toml").is_file():
+        return _PYTHON_VERIFY
+    if (p / "package.json").is_file():
+        return _NODE_VERIFY
+    return _GENERIC_VERIFY
+
+
 def _read_template(name: str) -> str:
     """Read a bundled template, supporting editable and wheel installs."""
     pkg_root = Path(__file__).parent.parent.parent
@@ -31,6 +61,7 @@ def render_prompt(
         "PROJECT_PATH": project_path,
         "ITERATION": str(iteration),
         "MAX_ITERATIONS": str(max_iterations),
+        "VERIFY_COMMANDS": detect_verify_commands(project_path),
     })
 
 

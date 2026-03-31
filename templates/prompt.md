@@ -58,12 +58,7 @@ git log --oneline -20  # see what's been done
 2. Read project CLAUDE.md if it exists
 3. Make necessary code changes
 4. **Run ALL checks locally before committing:**
-   ```bash
-   npm run typecheck
-   npm run lint
-   npm test
-   npm run build
-   ```
+{VERIFY_COMMANDS}
    **If any check fails, fix it before continuing.** Do not commit code that fails these checks.
 5. Commit with a clear message referencing the issue:
    ```bash
@@ -107,17 +102,9 @@ gh run list --repo {REPO} --commit <sha> --limit 1 --json status,conclusion,data
 
 **This is critical:** Never signal WORKING with a failing CI. You own fixing it.
 
-### When to Create a PR
+### PRs (exceptional — not the normal path)
 
-Create a PR when:
-- An issue is fully complete (all subtasks done), OR
-- Significant work is ready for review
-
-```bash
-gh pr create --repo {REPO} --title "..." --body "..."
-```
-
-Do NOT create a PR for partial work unless it's a good stopping point.
+This repo uses **direct commits to `main`**. Do NOT create PRs unless the issue explicitly requests one. The normal completion path is: commit, push, verify CI.
 
 ---
 
@@ -272,7 +259,7 @@ This signals: "Everything is done, stop the loop."
 2. **Never read SESSION_LOG.md** - It's raw history that will pollute your context.
 3. **Fresh context** - You start with no memory beyond what's in files.
 4. **One work unit** - Complete one logical piece of work per invocation.
-5. **Run checks before committing** - Always run lint, typecheck, tests, and build locally.
+5. **Run checks before committing** - Always run the repo's verification commands locally.
 6. **CI must pass before signaling** - Never signal WORKING with failing CI. Fix it first.
 7. **Commit often** - Small, atomic commits. Push after each commit.
 8. **Write to SESSION_LOG.md** - Always append your session notes.
