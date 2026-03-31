@@ -6,16 +6,14 @@ from importlib import resources
 from pathlib import Path
 
 
-def _templates_dir() -> Path:
-    """Get the path to the bundled templates directory."""
-    # In editable install, this resolves to the repo's templates/ directory
+def _read_template(name: str) -> str:
+    """Read a bundled template, supporting editable and wheel installs."""
     pkg_root = Path(__file__).parent.parent.parent
-    templates = pkg_root / "templates"
-    if templates.is_dir():
-        return templates
-    # Fallback: check importlib.resources
-    ref = resources.files("issue_worker").joinpath("../../templates")
-    return Path(str(ref))
+    repo_template = pkg_root / "templates" / name
+    if repo_template.is_file():
+        return repo_template.read_text()
+
+    return resources.files("issue_worker").joinpath("templates", name).read_text()
 
 
 def render_prompt(
@@ -26,7 +24,7 @@ def render_prompt(
     max_iterations: int,
 ) -> str:
     """Render the main agent prompt template with variables substituted."""
-    template = (_templates_dir() / "prompt.md").read_text()
+    template = _read_template("prompt.md")
     return _substitute(template, {
         "PROJECT": project,
         "REPO": repo,
@@ -38,7 +36,7 @@ def render_prompt(
 
 def render_consolidation_prompt(project_path: str) -> str:
     """Render the consolidation agent prompt template."""
-    template = (_templates_dir() / "consolidate-learnings.md").read_text()
+    template = _read_template("consolidate-learnings.md")
     return _substitute(template, {"PROJECT_PATH": project_path})
 
 

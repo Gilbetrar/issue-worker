@@ -18,6 +18,21 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/issue_worker"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"templates" = "issue_worker/templates"
+"defaults" = "issue_worker/defaults"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/templates",
+    "/defaults",
+    "/tests",
+    "/README.md",
+    "/LICENSE",
+    "/LEARNINGS.md",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 

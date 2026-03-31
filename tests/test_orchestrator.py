@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import issue_worker.orchestrator as orchestrator
 from issue_worker.orchestrator import (
     AGENT_EXIT_GRACE_PERIOD,
     CONSOLIDATION_LINE_THRESHOLD,
@@ -317,6 +318,35 @@ class TestConsolidationSerialization:
         )
         assert exit_wait_calls == []
 
+    def test_real_mode_command_writes_completion_signal_on_success(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Real-mode consolidation should emit a DONE signal after Claude succeeds."""
+        config = Config(
+            test_mode=False,
+            settings_file=tmp_path / "settings.json",
+            mcp_config=tmp_path / "mcp.json",
+        )
+        (tmp_path / "SESSION_LOG.md").write_text("\n".join(f"line {i}" for i in range(250)))
+        signal_file = tmp_path / "CONSOLIDATION_SIGNAL.txt"
+        started = tmp_path / ".issue-worker-consolidation-started"
+
+        def write_signal():
+            signal_file.write_text("DONE\n")
+
+        calls: list = []
+        monkeypatch.setattr("issue_worker.orchestrator.time.sleep", lambda _: None)
+        result = _run_consolidation(
+            tmp_path,
+            config,
+            _make_launcher(calls, side_effect=write_signal, started_file=started),
+        )
+
+        assert result is True
+        assert len(calls) == 1
+        assert "if claude" in calls[0][0]
+        assert "CONSOLIDATION_SIGNAL.txt.tmp" in calls[0][0]
+
 
 class TestWaitForAgentExit:
     """Tests for _wait_for_agent_exit — the block-while-alive gate."""
@@ -577,6 +607,29 @@ class TestSyncMain:
         assert result.success is False
         # Should have called stash twice: once to stash, once to pop (restore)
         assert len(stash_calls) == 2
+
+
+class TestBundledDefaultsFallback:
+    """Tests for packaged default config lookup."""
+
+    def test_defaults_dir_uses_packaged_resources_when_repo_defaults_missing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        bundled = tmp_path / "issue_worker"
+        bundled.mkdir()
+        (bundled / "defaults").mkdir()
+
+        monkeypatch.setattr(
+            orchestrator,
+            "__file__",
+            "/nonexistent/src/issue_worker/orchestrator.py",
+        )
+        monkeypatch.setattr(
+            "issue_worker.orchestrator.resources.files",
+            lambda _package: bundled,
+        )
+
+        assert orchestrator._defaults_dir() == bundled / "defaults"
 
 
 # ── Helpers for run() tests ────────────────────────────────────────

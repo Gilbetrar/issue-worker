@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import time
 from dataclasses import dataclass, field
+from importlib import resources
 from pathlib import Path
 
 from . import signals, terminal, notifications, prompts
@@ -474,8 +475,11 @@ def _run_consolidation(
     else:
         tab_cmd = (
             f"cd '{project_path}' && echo $$ > '{consolidation_started}' && "
-            f"claude --settings '{config.settings_file}' --mcp-config '{config.mcp_config}' "
-            f"--dangerously-skip-permissions < '{prompt_file}' ; "
+            f"if claude --settings '{config.settings_file}' --mcp-config '{config.mcp_config}' "
+            f"--dangerously-skip-permissions < '{prompt_file}'; then "
+            f"printf 'DONE\\n' > '{consolidation_signal}.tmp' && "
+            f"mv '{consolidation_signal}.tmp' '{consolidation_signal}'; "
+            f"fi; "
             f"rm -f '{prompt_file}'"
         )
 
@@ -748,4 +752,7 @@ def _wait_for_agent_exit(pid: int | None, label: str = "") -> None:
 
 def _defaults_dir() -> Path:
     """Get the path to the bundled defaults directory."""
-    return Path(__file__).parent.parent.parent / "defaults"
+    repo_defaults = Path(__file__).parent.parent.parent / "defaults"
+    if repo_defaults.is_dir():
+        return repo_defaults
+    return Path(str(resources.files("issue_worker").joinpath("defaults")))

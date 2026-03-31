@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import issue_worker.prompts as prompts
 from pathlib import Path
 
 import pytest
@@ -57,9 +58,50 @@ class TestTemplateMissing:
     """Tests for missing template files."""
 
     def test_missing_template_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(prompts, "__file__", "/nonexistent/src/issue_worker/prompts.py")
         monkeypatch.setattr(
-            "issue_worker.prompts._templates_dir",
-            lambda: Path("/nonexistent/templates"),
+            "issue_worker.prompts.resources.files",
+            lambda _package: Path("/nonexistent/package"),
         )
         with pytest.raises(FileNotFoundError):
             render_prompt("p", "r", "/p", 1, 10)
+
+
+class TestBundledResourceFallback:
+    """Tests for bundled resource loading outside editable installs."""
+
+    def test_render_prompt_uses_packaged_template_when_repo_template_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bundled = tmp_path / "issue_worker"
+        bundled.mkdir()
+        (bundled / "templates").mkdir()
+        (bundled / "templates" / "prompt.md").write_text("Hello {PROJECT} #{ITERATION}")
+
+        monkeypatch.setattr(prompts, "__file__", "/nonexistent/src/issue_worker/prompts.py")
+        monkeypatch.setattr(
+            "issue_worker.prompts.resources.files",
+            lambda _package: bundled,
+        )
+
+        result = render_prompt("myproj", "Owner/myproj", "/tmp/myproj", 7, 20)
+        assert result == "Hello myproj #7"
+
+    def test_render_consolidation_prompt_uses_packaged_template_when_repo_template_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bundled = tmp_path / "issue_worker"
+        bundled.mkdir()
+        (bundled / "templates").mkdir()
+        (bundled / "templates" / "consolidate-learnings.md").write_text(
+            "Consolidate {PROJECT_PATH}"
+        )
+
+        monkeypatch.setattr(prompts, "__file__", "/nonexistent/src/issue_worker/prompts.py")
+        monkeypatch.setattr(
+            "issue_worker.prompts.resources.files",
+            lambda _package: bundled,
+        )
+
+        result = render_consolidation_prompt("/tmp/project")
+        assert result == "Consolidate /tmp/project"
