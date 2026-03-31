@@ -1,6 +1,9 @@
 # Issue worker runtime files
 .issue-worker-started
 .issue-worker-consolidation-started
+SIGNAL.txt
+HANDOFF.md
+CONSOLIDATION_SIGNAL.txt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

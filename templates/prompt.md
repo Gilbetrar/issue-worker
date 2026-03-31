@@ -67,7 +67,7 @@ git log --oneline -20  # see what's been done
    **If any check fails, fix it before continuing.** Do not commit code that fails these checks.
 5. Commit with a clear message referencing the issue:
    ```bash
-   git add .
+   git add <changed-files>
    git commit -m "feat: description of change
 
    Part of #<issue-number>"
@@ -80,10 +80,15 @@ git log --oneline -20  # see what's been done
 After pushing, you MUST verify CI passes before signaling completion.
 
 ```bash
-# Wait for CI to start and complete (check every 30 seconds, up to 5 minutes)
+# Capture the exact commit you just pushed
+git rev-parse HEAD
+
+# Wait for CI for THIS commit to start and complete (check every 30 seconds, up to 5 minutes)
 sleep 30
-gh run list --repo {REPO} --branch main --limit 1 --json status,conclusion,databaseId
+gh run list --repo {REPO} --commit <sha> --limit 1 --json status,conclusion,databaseId,headSha
 ```
+
+**If no run appears yet:** Wait and check again.
 
 **If CI is still running:** Wait and check again.
 
@@ -96,8 +101,9 @@ gh run list --repo {REPO} --branch main --limit 1 --json status,conclusion,datab
    ```
 2. **Fix the issue** - this is your responsibility, not the next agent's
 3. Commit the fix, push again
-4. Wait for CI to pass again
-5. **Do not signal WORKING until CI is green**
+4. Capture the new `git rev-parse HEAD`
+5. Wait for CI for that new commit to pass again
+6. **Do not signal WORKING until CI is green**
 
 **This is critical:** Never signal WORKING with a failing CI. You own fixing it.
 
@@ -156,6 +162,8 @@ git add SESSION_LOG.md LEARNINGS.md
 git commit -m "docs: update learnings from issue #X work"
 git push
 ```
+
+**If you push a learnings commit:** repeat Step 3.1 for the new `HEAD` before writing any signal. The commit you signal must be the commit whose CI passed.
 
 **What goes in SESSION_LOG.md:**
 - Everything about your session

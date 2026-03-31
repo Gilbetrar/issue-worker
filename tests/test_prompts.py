@@ -41,6 +41,28 @@ class TestRenderPrompt:
         assert "{ITERATION}" not in result
         assert "{MAX_ITERATIONS}" not in result
 
+    def test_prompt_requires_commit_specific_ci_checking(self) -> None:
+        result = render_prompt(
+            project="proj",
+            repo="Owner/proj",
+            project_path="/tmp/proj",
+            iteration=1,
+            max_iterations=10,
+        )
+        assert "gh run list --repo Owner/proj --commit <sha>" in result
+        assert "The commit you signal must be the commit whose CI passed." in result
+
+    def test_prompt_avoids_git_add_dot(self) -> None:
+        result = render_prompt(
+            project="proj",
+            repo="Owner/proj",
+            project_path="/tmp/proj",
+            iteration=1,
+            max_iterations=10,
+        )
+        assert "git add ." not in result
+        assert "git add <changed-files>" in result
+
 
 class TestRenderConsolidationPrompt:
     """Tests for render_consolidation_prompt."""
