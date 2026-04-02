@@ -23,6 +23,7 @@ PROFILES: dict[str, dict] = {
         "projects_dir_suffix": Path("AI") / "Projects",
         "github_account": "Gilbetrar",
         "ssh_host": "github.com",
+        "claude_config_dir": ".claude",
         "settings_file": "settings.json",
         "mcp_config": "mcp.json",
     },
@@ -30,6 +31,7 @@ PROFILES: dict[str, dict] = {
         "projects_dir_suffix": Path("work-ai"),
         "github_account": "benbateman-work",
         "ssh_host": "github-work",
+        "claude_config_dir": ".claude-work",
         "settings_file": "work-settings.json",
         "mcp_config": "work-mcp.json",
     },
@@ -43,6 +45,7 @@ class Config:
     projects_dir: Path = field(default_factory=lambda: Path.home() / "AI" / "Projects")
     github_account: str = "Gilbetrar"
     ssh_host: str = "github.com"
+    claude_config_dir: Path | None = None
     max_iterations: int = 10
     poll_timeout: int = 1800  # 30 minutes
     max_crashes: int = 3
@@ -81,6 +84,7 @@ class Config:
             "projects_dir": Path.home() / profile["projects_dir_suffix"],
             "github_account": profile["github_account"],
             "ssh_host": profile["ssh_host"],
+            "claude_config_dir": Path.home() / profile["claude_config_dir"],
             "settings_file": _defaults_dir() / profile["settings_file"],
             "mcp_config": _defaults_dir() / profile["mcp_config"],
         }
@@ -238,6 +242,7 @@ def run(
                 )
         else:
             tab_cmd = (
+                f"{_env_prefix(config)}"
                 f"cd '{project_path}' && echo $$ > '{started_file}' && "
                 f"claude --settings '{config.settings_file}' --mcp-config '{config.mcp_config}' "
                 f"--dangerously-skip-permissions < '{prompt_file}' ; "
@@ -518,6 +523,7 @@ def _run_consolidation(
         )
     else:
         tab_cmd = (
+            f"{_env_prefix(config)}"
             f"cd '{project_path}' && echo $$ > '{consolidation_started}' && "
             f"if claude --settings '{config.settings_file}' --mcp-config '{config.mcp_config}' "
             f"--dangerously-skip-permissions < '{prompt_file}'; then "
@@ -792,6 +798,13 @@ def _wait_for_agent_exit(pid: int | None, label: str = "") -> None:
         pid,
         AGENT_EXIT_GRACE_PERIOD,
     )
+
+
+def _env_prefix(config: Config) -> str:
+    """Shell prefix to export CLAUDE_CONFIG_DIR, or empty string."""
+    if config.claude_config_dir:
+        return f"export CLAUDE_CONFIG_DIR='{config.claude_config_dir}' && "
+    return ""
 
 
 def _defaults_dir() -> Path:
