@@ -31,7 +31,7 @@ def test_numeric_positional_is_max_iterations(monkeypatch: pytest.MonkeyPatch) -
     """A lone numeric positional argument should be treated as max iterations."""
     seen: dict[str, object] = {}
 
-    def fake_select_project(input_name, base_dir, github_account):
+    def fake_select_project(input_name, base_dir, github_account, ssh_host="github.com"):
         seen["input_name"] = input_name
         seen["base_dir"] = base_dir
         seen["github_account"] = github_account

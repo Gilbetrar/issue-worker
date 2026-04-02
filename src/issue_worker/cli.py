@@ -84,6 +84,7 @@ def main() -> None:
         input_name=project_input,
         base_dir=config.projects_dir,
         github_account=config.github_account,
+        ssh_host=config.ssh_host,
     )
     if not project:
         sys.exit(1)

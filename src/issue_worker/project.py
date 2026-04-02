@@ -38,6 +38,7 @@ def select_project(
     input_name: str | None,
     base_dir: Path,
     github_account: str,
+    ssh_host: str = "github.com",
 ) -> str | None:
     """Select a project interactively or by name.
 
@@ -71,7 +72,7 @@ def select_project(
         if len(matches) == 1:
             name, source = matches[0]
             if source == "github":
-                if not _clone_repo(github_account, name, base_dir):
+                if not _clone_repo(github_account, name, base_dir, ssh_host):
                     return None
             return name
         if len(matches) > 1:
@@ -80,15 +81,16 @@ def select_project(
 
     # Interactive picker
     if shutil.which("fzf"):
-        return _fzf_pick(entries, base_dir, github_account, query=input_name)
+        return _fzf_pick(entries, base_dir, github_account, ssh_host, query=input_name)
     else:
-        return _menu_pick(entries, base_dir, github_account)
+        return _menu_pick(entries, base_dir, github_account, ssh_host)
 
 
 def _fzf_pick(
     entries: list[tuple[str, str]],
     base_dir: Path,
     github_account: str,
+    ssh_host: str = "github.com",
     query: str | None = None,
 ) -> str | None:
     """Use fzf for interactive selection."""
@@ -111,7 +113,7 @@ def _fzf_pick(
             text=True,
         )
     except OSError:
-        return _menu_pick(entries, base_dir, github_account)
+        return _menu_pick(entries, base_dir, github_account, ssh_host)
 
     if result.returncode != 0 or not result.stdout.strip():
         return None
@@ -122,7 +124,7 @@ def _fzf_pick(
     source = "github" if "(github)" in selected else "local"
 
     if source == "github":
-        if not _clone_repo(github_account, name, base_dir):
+        if not _clone_repo(github_account, name, base_dir, ssh_host):
             return None
     return name
 
@@ -131,6 +133,7 @@ def _menu_pick(
     entries: list[tuple[str, str]],
     base_dir: Path,
     github_account: str,
+    ssh_host: str = "github.com",
 ) -> str | None:
     """Numbered menu fallback when fzf is not available."""
     for i, (name, source) in enumerate(entries, 1):
@@ -149,17 +152,17 @@ def _menu_pick(
 
     name, source = entries[idx]
     if source == "github":
-        if not _clone_repo(github_account, name, base_dir):
+        if not _clone_repo(github_account, name, base_dir, ssh_host):
             return None
     return name
 
 
-def _clone_repo(account: str, name: str, base_dir: Path) -> bool:
-    """Clone a GitHub repo into the base directory."""
+def _clone_repo(account: str, name: str, base_dir: Path, ssh_host: str = "github.com") -> bool:
+    """Clone a GitHub repo into the base directory via SSH."""
     print(f"Cloning {name} from GitHub...")
     try:
         result = subprocess.run(
-            ["gh", "repo", "clone", f"{account}/{name}", str(base_dir / name)],
+            ["git", "clone", f"git@{ssh_host}:{account}/{name}.git", str(base_dir / name)],
             timeout=120,
         )
         return result.returncode == 0

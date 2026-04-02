@@ -22,12 +22,14 @@ PROFILES: dict[str, dict] = {
     "personal": {
         "projects_dir_suffix": Path("AI") / "Projects",
         "github_account": "Gilbetrar",
+        "ssh_host": "github.com",
         "settings_file": "settings.json",
         "mcp_config": "mcp.json",
     },
     "work": {
         "projects_dir_suffix": Path("work-ai"),
         "github_account": "benbateman-work",
+        "ssh_host": "github-work",
         "settings_file": "work-settings.json",
         "mcp_config": "work-mcp.json",
     },
@@ -40,6 +42,7 @@ class Config:
 
     projects_dir: Path = field(default_factory=lambda: Path.home() / "AI" / "Projects")
     github_account: str = "Gilbetrar"
+    ssh_host: str = "github.com"
     max_iterations: int = 10
     poll_timeout: int = 1800  # 30 minutes
     max_crashes: int = 3
@@ -77,6 +80,7 @@ class Config:
         defaults = {
             "projects_dir": Path.home() / profile["projects_dir_suffix"],
             "github_account": profile["github_account"],
+            "ssh_host": profile["ssh_host"],
             "settings_file": _defaults_dir() / profile["settings_file"],
             "mcp_config": _defaults_dir() / profile["mcp_config"],
         }
