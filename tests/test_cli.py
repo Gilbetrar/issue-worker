@@ -210,3 +210,52 @@ def test_test_flag_sets_test_mode(
 
     assert captured["config"].test_mode is True
     assert captured["use_test_launcher"] is True
+
+
+def test_profile_flag_work(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """--profile work should create a Config with work account and paths."""
+    (tmp_path / "work-ai" / "myproj").mkdir(parents=True)
+    (tmp_path / "work-ai" / "myproj" / ".git").mkdir()
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+
+    captured: dict = {}
+
+    def capture_run(**kwargs):
+        captured.update(kwargs)
+        return RunResult(1, "complete", "done")
+
+    monkeypatch.setattr(cli, "select_project", lambda **_: "myproj")
+    monkeypatch.setattr(cli, "get_repo_url", lambda _path: "benbateman-work/myproj")
+    monkeypatch.setattr(cli, "run", capture_run)
+    monkeypatch.setattr(sys, "argv", ["issue-worker", "myproj", "--profile", "work"])
+
+    with pytest.raises(SystemExit):
+        cli.main()
+
+    assert captured["config"].github_account == "benbateman-work"
+    assert captured["config"].projects_dir == tmp_path / "work-ai"
+
+
+def test_profile_flag_default_is_personal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Omitting --profile should default to personal."""
+    _setup_cli(monkeypatch, tmp_path)
+
+    captured: dict = {}
+
+    def capture_run(**kwargs):
+        captured.update(kwargs)
+        return RunResult(1, "complete", "done")
+
+    monkeypatch.setattr(cli, "select_project", lambda **_: "myproj")
+    monkeypatch.setattr(cli, "get_repo_url", lambda _path: "Gilbetrar/myproj")
+    monkeypatch.setattr(cli, "run", capture_run)
+    monkeypatch.setattr(sys, "argv", ["issue-worker", "myproj"])
+
+    with pytest.raises(SystemExit):
+        cli.main()
+
+    assert captured["config"].github_account == "Gilbetrar"

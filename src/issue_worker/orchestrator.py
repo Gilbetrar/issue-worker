@@ -18,10 +18,25 @@ CONSOLIDATION_TIMEOUT = 300  # 5 minutes
 CONSOLIDATION_LINE_THRESHOLD = 200
 AGENT_EXIT_GRACE_PERIOD = 30  # seconds to wait before detaching from a finished agent
 
+PROFILES: dict[str, dict] = {
+    "personal": {
+        "projects_dir_suffix": Path("AI") / "Projects",
+        "github_account": "Gilbetrar",
+        "settings_file": "settings.json",
+        "mcp_config": "mcp.json",
+    },
+    "work": {
+        "projects_dir_suffix": Path("work-ai"),
+        "github_account": "benbateman-work",
+        "settings_file": "work-settings.json",
+        "mcp_config": "work-mcp.json",
+    },
+}
+
 
 @dataclass
 class Config:
-    """Orchestrator configuration (hardcoded defaults for MVP)."""
+    """Orchestrator configuration."""
 
     projects_dir: Path = field(default_factory=lambda: Path.home() / "AI" / "Projects")
     github_account: str = "Gilbetrar"
@@ -42,6 +57,31 @@ class Config:
             self.mcp_config = _defaults_dir() / "mcp.json"
         if self.test_mode:
             self.max_iterations = 3
+
+    @classmethod
+    def from_profile(cls, name: str, **overrides) -> Config:
+        """Create a Config from a named profile.
+
+        Args:
+            name: Profile name (must be a key in PROFILES).
+            **overrides: Additional Config field overrides (e.g. max_iterations).
+
+        Raises:
+            ValueError: If the profile name is not recognized.
+        """
+        if name not in PROFILES:
+            valid = ", ".join(sorted(PROFILES))
+            raise ValueError(f"Unknown profile '{name}'. Valid profiles: {valid}")
+
+        profile = PROFILES[name]
+        defaults = {
+            "projects_dir": Path.home() / profile["projects_dir_suffix"],
+            "github_account": profile["github_account"],
+            "settings_file": _defaults_dir() / profile["settings_file"],
+            "mcp_config": _defaults_dir() / profile["mcp_config"],
+        }
+        defaults.update(overrides)
+        return cls(**defaults)
 
 
 @dataclass

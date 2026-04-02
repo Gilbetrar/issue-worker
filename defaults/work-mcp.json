@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "playwright": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["@playwright/mcp@latest"]
+    },
+    "macos-automator": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@anthropic/macos-automator-mcp"]
+    },
+    "google": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@anthropic/google-mcp-server"]
+    }
+  }
+}

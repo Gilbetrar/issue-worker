@@ -7,9 +7,12 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import issue_worker.orchestrator as orchestrator
+import pytest
+
 from issue_worker.orchestrator import (
     AGENT_EXIT_GRACE_PERIOD,
     CONSOLIDATION_LINE_THRESHOLD,
+    PROFILES,
     Config,
     RunResult,
     SyncResult,
@@ -42,6 +45,53 @@ class TestShouldConsolidate:
 
     def test_iteration_11_skips(self) -> None:
         assert _should_consolidate(11) is False
+
+
+class TestConfigFromProfile:
+    """Tests for Config.from_profile() classmethod."""
+
+    def test_personal_profile_matches_defaults(self) -> None:
+        """Personal profile should produce the same values as default Config()."""
+        default = Config()
+        personal = Config.from_profile("personal")
+        assert personal.projects_dir == default.projects_dir
+        assert personal.github_account == default.github_account
+        assert personal.settings_file == default.settings_file
+        assert personal.mcp_config == default.mcp_config
+
+    def test_work_profile_has_work_paths(self) -> None:
+        """Work profile should use work-specific paths and account."""
+        work = Config.from_profile("work")
+        assert work.projects_dir == Path.home() / "work-ai"
+        assert work.github_account == "benbateman-work"
+        assert work.settings_file.name == "work-settings.json"
+        assert work.mcp_config.name == "work-mcp.json"
+
+    def test_invalid_profile_raises(self) -> None:
+        """Unknown profile name should raise ValueError."""
+        with pytest.raises(ValueError, match="Unknown profile 'bogus'"):
+            Config.from_profile("bogus")
+
+    def test_overrides_apply(self) -> None:
+        """Keyword overrides should take precedence over profile defaults."""
+        config = Config.from_profile("personal", max_iterations=42, verbose=True)
+        assert config.max_iterations == 42
+        assert config.verbose is True
+        # Profile defaults still apply for non-overridden fields
+        assert config.github_account == "Gilbetrar"
+
+    def test_test_mode_override_caps_iterations(self) -> None:
+        """test_mode override should trigger __post_init__ capping iterations to 3."""
+        config = Config.from_profile("work", test_mode=True)
+        assert config.test_mode is True
+        assert config.max_iterations == 3
+
+    def test_all_profiles_exist(self) -> None:
+        """Every profile in PROFILES should be constructible."""
+        for name in PROFILES:
+            config = Config.from_profile(name)
+            assert config.github_account
+            assert config.projects_dir
 
 
 def _make_launcher(

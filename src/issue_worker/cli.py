@@ -7,7 +7,7 @@ import sys
 
 from . import __version__
 from .logging import list_log_files, LOG_DIR
-from .orchestrator import Config, run
+from .orchestrator import PROFILES, Config, run
 from .project import select_project, get_repo_url
 
 
@@ -52,6 +52,7 @@ def main() -> None:
     )
     parser.add_argument("project", nargs="?", help="Project name (fuzzy matched) or omit for picker")
     parser.add_argument("max_iterations", nargs="?", type=int, help="Max iterations (default: 10)")
+    parser.add_argument("--profile", default="personal", choices=sorted(PROFILES), help="Config profile (default: personal)")
     parser.add_argument("--test", action="store_true", help="Self-test mode (3 iterations with stubs)")
     parser.add_argument("--max-iterations", type=int, dest="max_iterations_flag", help="Max iterations")
     parser.add_argument("--poll-timeout", type=int, help="Signal poll timeout in seconds")
@@ -69,14 +70,14 @@ def main() -> None:
         max_iterations = int(project_input)
         project_input = None
 
-    # MVP: hardcoded personal config
-    config = Config(
-        max_iterations=max_iterations,
-        test_mode=args.test,
-        verbose=args.verbose,
-    )
+    overrides: dict = {
+        "max_iterations": max_iterations,
+        "test_mode": args.test,
+        "verbose": args.verbose,
+    }
     if args.poll_timeout:
-        config.poll_timeout = args.poll_timeout
+        overrides["poll_timeout"] = args.poll_timeout
+    config = Config.from_profile(args.profile, **overrides)
 
     # Select project
     project = select_project(
