@@ -395,3 +395,30 @@ Raw session history. Agents: append here, read LEARNINGS.md instead.
 
 **Mistakes made:**
 - None this session
+
+---
+
+## Agent Session - Issue #19
+
+**Worked on:** Issue #19 - Add work profile support (--profile work)
+
+**What I did:**
+- Added `PROFILES` dict and `Config.from_profile()` classmethod to `orchestrator.py`
+- Added `--profile` CLI flag (choices: personal, work) defaulting to "personal"
+- Replaced hardcoded `Config()` in CLI with `Config.from_profile(args.profile, **overrides)`
+- Created `defaults/work-settings.json` (personal minus toggl/slack permissions)
+- Created `defaults/work-mcp.json` (personal minus toggl server)
+- Added 6 tests in `TestConfigFromProfile` class and 2 CLI tests for --profile flag
+- All 156 tests pass, CI green
+
+**What I learned:**
+- `GH_TOKEN` env var forces work account; use `GH_TOKEN= gh <cmd>` for personal account (already in LEARNINGS.md)
+- Profile system uses `projects_dir_suffix` relative to `Path.home()` to avoid hardcoding absolute paths
+- `from_profile()` skips `__post_init__` defaults for settings_file/mcp_config since it sets them explicitly
+
+**Codebase facts discovered:**
+- CLI imports `PROFILES` from orchestrator to use as `choices` for argparse
+- The `_defaults_dir()` helper resolves the bundled defaults path — both repo-relative and packaged resource paths
+
+**Mistakes made:**
+- Initially imported unused `Config` in test_cli.py — caught by ruff

@@ -14,7 +14,7 @@ Distilled patterns for future agents. Keep under 100 lines.
 
 ```bash
 uv run ruff check src/ tests/   # Lint (src + tests)
-uv run pytest tests/ -v         # Tests (133 tests across 8 files)
+uv run pytest tests/ -v         # Tests (148 tests across 8 files)
 uv add --dev <package>          # Add dev dependency
 ```
 
